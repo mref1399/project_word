@@ -120,7 +120,6 @@ class SmartDocumentGenerator:
 
     def _setup_document(self):
         """تنظیمات اولیه سند"""
-        # تنظیم راست‌چین برای فارسی
         section = self.doc.sections[0]
         section.page_height = Inches(11.69)  # A4
         section.page_width = Inches(8.27)
@@ -163,7 +162,6 @@ class SmartDocumentGenerator:
 
     def add_formula(self, text):
         """افزودن فرمول"""
-        # استخراج فرمول
         formula_match = re.search(r'\$\$(.*?)\$\$|\$(.*?)\$', text, re.DOTALL)
         
         if formula_match:
@@ -312,7 +310,7 @@ def generate_document():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    return jsonify({'status': 'ok', 'message': 'Service is running'})
+    return jsonify({'status': 'ok', 'message': 'Service is running on port 8001'})
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=8001)
