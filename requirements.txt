@@ -1,3 +1,5 @@
-flask
-python-docx
-pandas
+flask==3.0.0
+python-docx==1.1.0
+hazm==0.7.0
+sympy==1.12
+Werkzeug==3.0.1
