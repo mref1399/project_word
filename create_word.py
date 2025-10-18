@@ -9,33 +9,19 @@ import io
 
 app = Flask(__name__)
 
-# ---------------------- Persian Text Processor ----------------------
+# ---------------- فارسی‌ساز ----------------
 class PersianTextProcessor:
-    """پردازشگر دقیق متن فارسی بدون حذف فرمول"""
-
     def clean_text(self, text):
-        # محافظت از فرمول‌ها
-        formulas = re.findall(r'\$\$.*?\$\$|\$.*?\$', text)
-        for i, f in enumerate(formulas):
-            text = text.replace(f, f"§§{i}§§")
-
-        # نرمال‌سازی نویسه‌ها
         text = text.replace('ي', 'ی').replace('ك', 'ک').replace('ە', 'ه').replace('ؤ', 'و')
         text = re.sub(r'\s+', ' ', text)
         text = re.sub(r'\s+([.,،؛:!؟»\)])', r'\1', text)
         text = re.sub(r'([(«])\s+', r'\1', text)
-
-        # نیم‌فاصله‌ها
         prefixes = ['می', 'نمی', 'بی', 'به', 'در', 'که']
         for p in prefixes:
             text = re.sub(f'\\b{p} ', f'{p}\u200c', text)
-
-        # بازگرداندن فرمول‌ها بدون تغییر
-        for i, f in enumerate(formulas):
-            text = text.replace(f"§§{i}§§", f)
         return text.strip()
 
-# ---------------------- Smart Word Generator ----------------------
+# ---------------- سازنده سند ----------------
 class SmartDocumentGenerator:
     def __init__(self):
         self.doc = Document()
@@ -44,9 +30,9 @@ class SmartDocumentGenerator:
 
     def _setup_doc(self):
         s = self.doc.sections[0]
-        s.page_height = Inches(11.69)  # A4
+        s.page_height = Inches(11.69)
         s.page_width = Inches(8.27)
-        s.left_margin = s.right_margin = s.top_margin = s.bottom_margin = Inches(1)
+        s.top_margin = s.bottom_margin = s.left_margin = s.right_margin = Inches(1)
 
     def _set_rtl(self, p):
         pPr = p._element.get_or_add_pPr()
@@ -54,7 +40,8 @@ class SmartDocumentGenerator:
         bidi.set(qn('w:val'), '1')
         pPr.append(bidi)
 
-    # ---------- نوع خط ----------
+    # ---------------- محتوا ----------------
+
     def detect_content_type(self, line):
         line = line.strip()
         if not line:
@@ -69,67 +56,82 @@ class SmartDocumentGenerator:
             return 'table_caption'
         return 'text'
 
-    # ---------- اجزای سند ----------
+    # ---------------- تیتر ----------------
     def add_heading(self, text, level=1):
         text = re.sub(r'^#+\s*', '', text)
-        h = self.doc.add_heading(level=level)
-        r = h.add_run(text)
-        r.bold = True
-        r.font.name = 'B Nazanin'
-        r.font.size = Pt(18 - level * 2)
-        r._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-        h.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        self._set_rtl(h)
+        # حذف ** و * نقطه ضعف قبلی
+        text = re.sub(r'^\*\*(.+?)\*\*$', r'\1', text)
+        text = re.sub(r'^\*(.+?)\*$', r'\1', text)
+        text = self.text_processor.clean_text(text)
 
+        p = self.doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        self._set_rtl(p)
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+
+        run = p.add_run(text)
+        run.bold = True
+        run.font.name = 'B Nazanin'
+        run.font.size = Pt(18 - level * 2)
+        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+
+    # ---------------- فرمول ----------------
     def add_formula(self, text):
-        """درج فرمول خام، بدون حذف یا تغییر"""
         formulas = re.findall(r'\$\$.*?\$\$|\$.*?\$', text)
         for f in formulas:
             f = f.strip('$').strip()
             p = self.doc.add_paragraph(f)
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.space_after = Pt(0)
             r = p.runs[0]
             r.font.name = 'Cambria Math'
             r.font.size = Pt(14)
 
+    # ---------------- کپشن ----------------
     def add_caption(self, text):
-        """افزودن عنوان شکل یا جدول"""
-        p = self.doc.add_paragraph()
+        p = self.doc.add_paragraph(text)
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         self._set_rtl(p)
-        r = p.add_run(text)
+        p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.space_before = Pt(0)
+
+        r = p.runs[0]
         r.bold = True
         r.font.name = 'B Nazanin'
         r.font.size = Pt(13)
         r._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
+    # ---------------- متن عادی ----------------
     def add_text(self, text):
-        """پاراگراف معمولی با متن فارسی و انگلیسی"""
         text = self.text_processor.clean_text(text)
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+        p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.space_before = Pt(0)
         self._set_rtl(p)
+
         parts = re.split(r'([A-Za-z0-9,;:.()\[\]{}=+\-*/^%<>])', text)
         for part in parts:
             if not part.strip():
                 continue
             if re.match(r'[A-Za-z0-9]', part):
-                r = p.add_run(part)
-                r.font.name = 'Times New Roman'
-                r.font.size = Pt(12)
+                run = p.add_run(part)
+                run.font.name = 'Times New Roman'
+                run.font.size = Pt(12)
             else:
-                r = p.add_run(part)
-                r.font.name = 'B Nazanin'
-                r.font.size = Pt(14)
-                r._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                run = p.add_run(part)
+                run.font.name = 'B Nazanin'
+                run.font.size = Pt(14)
+                run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-    # ---------- پردازش کلی متن ----------
+    # ---------------- پردازش کل متن ----------------
     def process_text(self, text):
         lines = [ln.rstrip() for ln in text.split('\n')]
         clean_lines = []
         for ln in lines:
-            # حذف خطوط خالی متوالی
             if ln == '' and (not clean_lines or clean_lines[-1] == ''):
                 continue
             clean_lines.append(ln)
@@ -138,11 +140,11 @@ class SmartDocumentGenerator:
         for line in clean_lines:
             t = self.detect_content_type(line)
             if t == 'empty':
-                # فقط یه بار خط خالی بین دو پاراگراف عادی
                 if previous_type in ['text', 'formula']:
-                    self.doc.add_paragraph()
+                    self.doc.add_paragraph().paragraph_format.space_after = Pt(0)
             elif t == 'heading':
-                self.add_heading(line)
+                level = len(re.match(r'^#+', line).group())
+                self.add_heading(line, level=min(level, 3))
             elif t == 'formula':
                 self.add_formula(line)
             elif t in ['figure_caption', 'table_caption']:
@@ -152,12 +154,12 @@ class SmartDocumentGenerator:
             previous_type = t
 
     def save_to_stream(self):
-        f = io.BytesIO()
-        self.doc.save(f)
-        f.seek(0)
-        return f
+        buf = io.BytesIO()
+        self.doc.save(buf)
+        buf.seek(0)
+        return buf
 
-# ---------------------- API ----------------------
+# ---------------- سرور Flask ----------------
 @app.route('/generate', methods=['POST'])
 def generate_word():
     try:
@@ -167,9 +169,9 @@ def generate_word():
             return jsonify({'error': 'متن الزامی است'}), 400
         gen = SmartDocumentGenerator()
         gen.process_text(text)
-        fstream = gen.save_to_stream()
+        stream = gen.save_to_stream()
         return send_file(
-            fstream,
+            stream,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             as_attachment=True,
             download_name='document.docx'
@@ -181,7 +183,7 @@ def generate_word():
 def home():
     return jsonify({
         'status': 'ok',
-        'message': 'ProjectWord Final Persian-Math DOCX Engine ✅',
+        'message': 'ProjectWord Final Persian DOCX Engine ✅',
         'endpoints': ['/health', '/generate']
     })
 
