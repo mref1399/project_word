@@ -60,8 +60,8 @@ class SmartDocumentGenerator:
         text = re.sub(r'^#+\s*', '', text)
         text = self.text_processor.clean_text(text)
 
-        # شناسایی بخش‌های بولد بین *...*
-        segments = re.split(r'(\*[^*]+\*)', text)
+        # پشتیبانی از *...* یا **...**
+        segments = re.split(r'(\*{1,2}[^*]+?\*{1,2})', text)
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         self._set_rtl(p)
@@ -71,11 +71,15 @@ class SmartDocumentGenerator:
         for seg in segments:
             if not seg.strip():
                 continue
-            run = p.add_run(seg.strip('*') if seg.startswith('*') and seg.endswith('*') else seg)
+            if re.match(r'^\*{1,2}[^*]+?\*{1,2}$', seg):
+                clean_seg = re.sub(r'^\*{1,2}|(?<=.)\*{1,2}$', '', seg)
+                run = p.add_run(clean_seg)
+                run.bold = True
+            else:
+                run = p.add_run(seg)
             run.font.name = 'B Nazanin'
             run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
             run.font.size = Pt(18 - level * 2)
-            run.bold = seg.startswith('*') and seg.endswith('*')
 
     # ---------------- فرمول ----------------
     def add_formula(self, text):
@@ -92,17 +96,26 @@ class SmartDocumentGenerator:
 
     # ---------------- کپشن ----------------
     def add_caption(self, text):
-        p = self.doc.add_paragraph(text)
+        text = self.text_processor.clean_text(text)
+        segments = re.split(r'(\*{1,2}[^*]+?\*{1,2})', text)
+        p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         self._set_rtl(p)
         p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.space_before = Pt(0)
 
-        r = p.runs[0]
-        r.bold = True
-        r.font.name = 'B Nazanin'
-        r.font.size = Pt(13)
-        r._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+        for seg in segments:
+            if not seg.strip():
+                continue
+            if re.match(r'^\*{1,2}[^*]+?\*{1,2}$', seg):
+                clean_seg = re.sub(r'^\*{1,2}|(?<=.)\*{1,2}$', '', seg)
+                run = p.add_run(clean_seg)
+                run.bold = True
+            else:
+                run = p.add_run(seg)
+            run.font.name = 'B Nazanin'
+            run.font.size = Pt(13)
+            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
     # ---------------- متن عادی ----------------
     def add_text(self, text):
@@ -114,16 +127,16 @@ class SmartDocumentGenerator:
         p.paragraph_format.space_before = Pt(0)
         self._set_rtl(p)
 
-        # شناسایی بخش‌های بولد بین *...*
-        bold_segments = re.split(r'(\*[^*]+\*)', text)
+        # پشتیبانی از *...* یا **...**
+        bold_segments = re.split(r'(\*{1,2}[^*]+?\*{1,2})', text)
 
         for segment in bold_segments:
             if not segment.strip():
                 continue
 
-            # اگر میان دو ستاره است => بولد
-            if re.match(r'^\*[^*]+\*$', segment):
-                clean_seg = segment.strip('*')
+            # اگر بین ستاره‌هاست => بولد
+            if re.match(r'^\*{1,2}[^*]+?\*{1,2}$', segment):
+                clean_seg = re.sub(r'^\*{1,2}|(?<=.)\*{1,2}$', '', segment)
                 run = p.add_run(clean_seg)
                 run.bold = True
                 run.font.name = 'B Nazanin'
@@ -131,7 +144,7 @@ class SmartDocumentGenerator:
                 run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
                 continue
 
-            # سایر بخش‌ها همانند قبل پردازش شوند
+            # سایر بخش‌ها مانند قبل
             parts = re.split(r'([A-Za-z0-9,;:.()\[\]{}=+\-*/^%<>])', segment)
             for part in parts:
                 if not part.strip():
