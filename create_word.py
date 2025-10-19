@@ -40,8 +40,7 @@ class SmartDocumentGenerator:
         bidi.set(qn('w:val'), '1')
         pPr.append(bidi)
 
-    # ---------------- محتوا ----------------
-
+    # ---------------- شناسایی نوع محتوا ----------------
     def detect_content_type(self, line):
         line = line.strip()
         if not line:
@@ -59,22 +58,24 @@ class SmartDocumentGenerator:
     # ---------------- تیتر ----------------
     def add_heading(self, text, level=1):
         text = re.sub(r'^#+\s*', '', text)
-        # حذف ** و * نقطه ضعف قبلی
-        text = re.sub(r'^\*\*(.+?)\*\*$', r'\1', text)
-        text = re.sub(r'^\*(.+?)\*$', r'\1', text)
         text = self.text_processor.clean_text(text)
 
+        # شناسایی بخش‌های بولد بین *...*
+        segments = re.split(r'(\*[^*]+\*)', text)
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         self._set_rtl(p)
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.space_after = Pt(0)
 
-        run = p.add_run(text)
-        run.bold = True
-        run.font.name = 'B Nazanin'
-        run.font.size = Pt(18 - level * 2)
-        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+        for seg in segments:
+            if not seg.strip():
+                continue
+            run = p.add_run(seg.strip('*') if seg.startswith('*') and seg.endswith('*') else seg)
+            run.font.name = 'B Nazanin'
+            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+            run.font.size = Pt(18 - level * 2)
+            run.bold = seg.startswith('*') and seg.endswith('*')
 
     # ---------------- فرمول ----------------
     def add_formula(self, text):
@@ -113,19 +114,37 @@ class SmartDocumentGenerator:
         p.paragraph_format.space_before = Pt(0)
         self._set_rtl(p)
 
-        parts = re.split(r'([A-Za-z0-9,;:.()\[\]{}=+\-*/^%<>])', text)
-        for part in parts:
-            if not part.strip():
+        # شناسایی بخش‌های بولد بین *...*
+        bold_segments = re.split(r'(\*[^*]+\*)', text)
+
+        for segment in bold_segments:
+            if not segment.strip():
                 continue
-            if re.match(r'[A-Za-z0-9]', part):
-                run = p.add_run(part)
-                run.font.name = 'Times New Roman'
-                run.font.size = Pt(12)
-            else:
-                run = p.add_run(part)
+
+            # اگر میان دو ستاره است => بولد
+            if re.match(r'^\*[^*]+\*$', segment):
+                clean_seg = segment.strip('*')
+                run = p.add_run(clean_seg)
+                run.bold = True
                 run.font.name = 'B Nazanin'
                 run.font.size = Pt(14)
                 run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                continue
+
+            # سایر بخش‌ها همانند قبل پردازش شوند
+            parts = re.split(r'([A-Za-z0-9,;:.()\[\]{}=+\-*/^%<>])', segment)
+            for part in parts:
+                if not part.strip():
+                    continue
+                if re.match(r'[A-Za-z0-9]', part):
+                    run = p.add_run(part)
+                    run.font.name = 'Times New Roman'
+                    run.font.size = Pt(12)
+                else:
+                    run = p.add_run(part)
+                    run.font.name = 'B Nazanin'
+                    run.font.size = Pt(14)
+                    run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
     # ---------------- پردازش کل متن ----------------
     def process_text(self, text):
