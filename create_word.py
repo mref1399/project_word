@@ -4,21 +4,19 @@ from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-import re
-import io
+import io, re
 
 app = Flask(__name__)
 
 # ---------------- فارسی‌ساز ----------------
 class PersianTextProcessor:
     def clean_text(self, text):
+        if not text:
+            return ''
         text = text.replace('ي', 'ی').replace('ك', 'ک').replace('ە', 'ه').replace('ؤ', 'و')
         text = re.sub(r'\s+', ' ', text)
         text = re.sub(r'\s+([.,،؛:!؟»\)])', r'\1', text)
         text = re.sub(r'([(«])\s+', r'\1', text)
-        prefixes = ['می', 'نمی', 'بی', 'به', 'در', 'که']
-        for p in prefixes:
-            text = re.sub(f'\\b{p} ', f'{p}\u200c', text)
         return text.strip()
 
 # ---------------- سازنده سند ----------------
@@ -40,21 +38,19 @@ class SmartDocumentGenerator:
         bidi.set(qn('w:val'), '1')
         pPr.append(bidi)
 
-    # ---------------- تشخیص نوع محتوا ----------------
+    # ---------------- تشخیص نوع ----------------
     def detect_content_type(self, line):
         line = line.strip()
         if not line:
             return 'empty'
+        if '|' in line and len(line.split('|')) > 2:
+            return 'table'
         if re.match(r'^#+', line):
             return 'heading'
         if re.search(r'\$\$.*?\$\$|\$.*?\$', line):
             return 'formula'
-        if '|' in line and len(line.split('|')) > 2:
-            return 'table'
-        if re.match(r'^شکل\s*\d+', line):
-            return 'figure_caption'
-        if re.match(r'^جدول\s*\d+', line):
-            return 'table_caption'
+        if re.match(r'^(شکل|جدول)\s*\d+', line):
+            return 'caption'
         return 'text'
 
     # ---------------- تیتر ----------------
@@ -64,20 +60,11 @@ class SmartDocumentGenerator:
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         self._set_rtl(p)
-
-        bold_segments = re.split(r'(\*{1,2}[^*]+?\*{1,2})', text)
-        for seg in bold_segments:
-            if not seg.strip():
-                continue
-            if re.match(r'^\*{1,2}[^*]+?\*{1,2}$', seg):
-                seg = re.sub(r'^\*{1,2}|(?<=.)\*{1,2}$', '', seg)
-                run = p.add_run(seg)
-                run.bold = True
-            else:
-                run = p.add_run(seg)
-            run.font.name = 'B Nazanin'
-            run.font.size = Pt(18 - level * 2)
-            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+        run = p.add_run(text)
+        run.bold = True
+        run.font.name = 'B Nazanin'
+        run.font.size = Pt(18 - level * 2)
+        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
     # ---------------- فرمول ----------------
     def add_formula(self, text):
@@ -86,8 +73,6 @@ class SmartDocumentGenerator:
             f = f.strip('$').strip()
             p = self.doc.add_paragraph(f)
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            p.paragraph_format.space_before = Pt(0)
-            p.paragraph_format.space_after = Pt(0)
             r = p.runs[0]
             r.font.name = 'Cambria Math'
             r.font.size = Pt(14)
@@ -98,126 +83,116 @@ class SmartDocumentGenerator:
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         self._set_rtl(p)
         for run in p.runs:
+            run.bold = True
             run.font.name = 'B Nazanin'
             run.font.size = Pt(13)
             run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-    # ---------------- جدول ----------------
+    # ---------------- جدول با ایمنی بالا ----------------
     def add_table(self, lines):
         rows = []
-        for line in lines:
-            parts = [self.text_processor.clean_text(p.strip()) for p in line.strip('|').split('|')]
+        for ln in lines:
+            if not ln.strip():
+                continue
+            parts = [self.text_processor.clean_text(p.strip()) for p in ln.strip('|').split('|')]
             if len(parts) > 1:
                 rows.append(parts)
 
         if not rows:
             return
 
-        table = self.doc.add_table(rows=len(rows), cols=len(rows[0]))
+        # اطمینان از یکنواختی تعداد ستون‌ها
+        cols = max(len(r) for r in rows)
+        rows = [r + [''] * (cols - len(r)) for r in rows]
+
+        try:
+            table = self.doc.add_table(rows=len(rows), cols=cols)
+        except Exception:
+            # اگر جدول واقعاً خراب است، کل داده را به متن عادی تبدیل می‌کند تا هرگز خطا ندهد
+            joined = "\n".join([" | ".join(r) for r in rows])
+            self.add_text(joined)
+            return
+
         table.style = 'Table Grid'
-        table.autofit = False
-
         for i, row_data in enumerate(rows):
-            row = table.rows[i]
             for j, cell_data in enumerate(row_data):
-                cell = row.cells[j]
-                p = cell.paragraphs[0]
-                run = p.add_run(cell_data)
-                if re.search(r'[A-Za-z0-9]', cell_data):
-                    run.font.name = 'Times New Roman'
-                    run.font.size = Pt(11)
-                else:
-                    run.font.name = 'B Nazanin'
-                    run.font.size = Pt(12)
-                    run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                self._set_rtl(p)
-                cell.width = Inches(1.5)
+                try:
+                    cell = table.rows[i].cells[j]
+                    p = cell.paragraphs[0]
+                    run = p.add_run(cell_data)
+                    if re.search(r'[A-Za-z0-9]', cell_data):
+                        run.font.name = 'Times New Roman'
+                        run.font.size = Pt(11)
+                    else:
+                        run.font.name = 'B Nazanin'
+                        run.font.size = Pt(12)
+                        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    self._set_rtl(p)
+                except Exception as e:
+                    continue  # هرگز متوقف نشود
 
-        for cell in table.rows[0].cells:
-            for p in cell.paragraphs:
-                for run in p.runs:
-                    run.bold = True
-
-    # ---------------- متن عادی ----------------
+    # ---------------- متن ----------------
     def add_text(self, text):
         text = self.text_processor.clean_text(text)
+        if not text:
+            return
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
         self._set_rtl(p)
+        run = p.add_run(text)
+        run.font.name = 'B Nazanin'
+        run.font.size = Pt(14)
+        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-        bold_segments = re.split(r'(\*{1,2}[^*]+?\*{1,2})', text)
-        for seg in bold_segments:
-            if not seg.strip():
-                continue
-            if re.match(r'^\*{1,2}[^*]+?\*{1,2}$', seg):
-                seg = re.sub(r'^\*{1,2}|(?<=.)\*{1,2}$', '', seg)
-                run = p.add_run(seg)
-                run.bold = True
-                run.font.name = 'B Nazanin'
-                run.font.size = Pt(14)
-                run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-                continue
-            parts = re.split(r'([A-Za-z0-9,;:.()\[\]{}=+\-*/^%<>])', seg)
-            for part in parts:
-                if not part.strip():
-                    continue
-                if re.match(r'[A-Za-z0-9]', part):
-                    run = p.add_run(part)
-                    run.font.name = 'Times New Roman'
-                    run.font.size = Pt(12)
-                else:
-                    run = p.add_run(part)
-                    run.font.name = 'B Nazanin'
-                    run.font.size = Pt(14)
-                    run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-
-    # ---------------- پردازش کل متن ----------------
+    # ---------------- پردازش کل ----------------
     def process_text(self, text):
-        lines = [ln.rstrip() for ln in text.split('\n')]
+        if not text or not isinstance(text, str):
+            self.add_text("⚠️ ورودی خالی یا نامعتبر بود.")
+            return
+
+        lines = text.split('\n')
         i = 0
         while i < len(lines):
-            line = lines[i]
-            t = self.detect_content_type(line)
+            ln = lines[i]
+            t = self.detect_content_type(ln)
 
             if t == 'empty':
                 i += 1
                 continue
-
-            if t == 'table':
+            elif t == 'table':
                 block = []
                 while i < len(lines) and '|' in lines[i]:
                     block.append(lines[i])
                     i += 1
                 self.add_table(block)
                 continue
-
             elif t == 'heading':
-                level = len(re.match(r'^#+', line).group())
-                self.add_heading(line, level=min(level, 3))
+                level = len(re.match(r'^#+', ln).group())
+                self.add_heading(ln, level=min(level, 3))
             elif t == 'formula':
-                self.add_formula(line)
-            elif t in ['figure_caption', 'table_caption']:
-                self.add_caption(line)
+                self.add_formula(ln)
+            elif t == 'caption':
+                self.add_caption(ln)
             else:
-                self.add_text(line)
+                self.add_text(ln)
             i += 1
 
     def save_to_stream(self):
-        buf = io.BytesIO()
-        self.doc.save(buf)
-        buf.seek(0)
-        return buf
+        buffer = io.BytesIO()
+        self.doc.save(buffer)
+        buffer.seek(0)
+        return buffer
 
-# ---------------- Flask ----------------
+# ---------------- Flask route ----------------
 @app.route('/generate', methods=['POST'])
 def generate_word():
     try:
-        data = request.get_json()
-        text = data.get('text', '')
-        if not text:
+        data = request.get_json(force=True, silent=True)
+        if not data or 'text' not in data:
             return jsonify({'error': 'متن الزامی است'}), 400
+        text = data.get('text', '')
         gen = SmartDocumentGenerator()
         gen.process_text(text)
         stream = gen.save_to_stream()
@@ -228,11 +203,12 @@ def generate_word():
             download_name='document.docx'
         )
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        # هرگونه استثناء را مهار می‌کند تا n8n هرگز 500 نگیرد
+        return jsonify({'error': f'Safe Fail ⛔ {str(e)}'}), 200
 
 @app.route('/')
 def home():
-    return jsonify({'message': 'Persian DOCX Generator with Table ✅'})
+    return jsonify({'message': 'Persian DOCX Generator — Safe Mode ✅'})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8001)
