@@ -1,6 +1,6 @@
 from flask import Flask, request, send_file, jsonify
 from docx import Document
-from docx.shared import Pt, Inches
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
@@ -37,6 +37,44 @@ class SmartDocumentGenerator:
         bidi = OxmlElement('w:bidi')
         bidi.set(qn('w:val'), '1')
         pPr.append(bidi)
+
+    def _set_cell_borders(self, cell):
+        """تنظیم حاشیه‌های سلول برای ظاهر شکیل"""
+        tc = cell._element
+        tcPr = tc.get_or_add_tcPr()
+        
+        tcBorders = OxmlElement('w:tcBorders')
+        for border_name in ['top', 'left', 'bottom', 'right']:
+            border = OxmlElement(f'w:{border_name}')
+            border.set(qn('w:val'), 'single')
+            border.set(qn('w:sz'), '12')  # ضخامت حاشیه
+            border.set(qn('w:space'), '0')
+            border.set(qn('w:color'), '000000')  # رنگ مشکی
+            tcBorders.append(border)
+        
+        tcPr.append(tcBorders)
+
+    def _set_cell_shading(self, cell, is_header=False):
+        """رنگ پس‌زمینه برای سلول"""
+        tc = cell._element
+        tcPr = tc.get_or_add_tcPr()
+        shading = OxmlElement('w:shd')
+        shading.set(qn('w:fill'), 'D9E2F3' if is_header else 'FFFFFF')  # آبی روشن برای هدر
+        tcPr.append(shading)
+
+    def _set_cell_margins(self, cell):
+        """فاصله داخلی سلول"""
+        tc = cell._element
+        tcPr = tc.get_or_add_tcPr()
+        tcMar = OxmlElement('w:tcMar')
+        
+        for margin_name in ['top', 'left', 'bottom', 'right']:
+            margin = OxmlElement(f'w:{margin_name}')
+            margin.set(qn('w:w'), '100')
+            margin.set(qn('w:type'), 'dxa')
+            tcMar.append(margin)
+        
+        tcPr.append(tcMar)
 
     # ---------------- تشخیص نوع ----------------
     def detect_content_type(self, line):
@@ -88,7 +126,7 @@ class SmartDocumentGenerator:
             run.font.size = Pt(13)
             run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-    # ---------------- جدول با ایمنی بالا ----------------
+    # ---------------- جدول شکیل با فرمت‌بندی حرفه‌ای ----------------
     def add_table(self, lines):
         rows = []
         for ln in lines:
@@ -105,32 +143,68 @@ class SmartDocumentGenerator:
         cols = max(len(r) for r in rows)
         rows = [r + [''] * (cols - len(r)) for r in rows]
 
+        # حذف خط جداکننده markdown (خط دوم با ---|---|---)
+        if len(rows) > 1 and all(set(cell.strip()) <= {'-', ':', '|', ' '} for cell in rows[1]):
+            rows.pop(1)
+
+        if not rows:
+            return
+
         try:
             table = self.doc.add_table(rows=len(rows), cols=cols)
+            table.style = 'Table Grid'
+            
+            # تنظیم عرض جدول
+            table.autofit = False
+            table.allow_autofit = False
+            
+            for i, row_data in enumerate(rows):
+                is_header = (i == 0)  # سطر اول را هدر در نظر می‌گیریم
+                
+                for j, cell_data in enumerate(row_data):
+                    try:
+                        cell = table.rows[i].cells[j]
+                        
+                        # تنظیمات ظاهری سلول
+                        self._set_cell_borders(cell)
+                        self._set_cell_shading(cell, is_header)
+                        self._set_cell_margins(cell)
+                        
+                        # محتوای سلول
+                        p = cell.paragraphs[0]
+                        p.paragraph_format.space_before = Pt(3)
+                        p.paragraph_format.space_after = Pt(3)
+                        
+                        run = p.add_run(cell_data)
+                        
+                        # فونت و اندازه
+                        if re.search(r'[A-Za-z0-9]', cell_data):
+                            run.font.name = 'Times New Roman'
+                            run.font.size = Pt(11)
+                        else:
+                            run.font.name = 'B Nazanin'
+                            run.font.size = Pt(12)
+                            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                        
+                        # هدر را برجسته می‌کنیم
+                        if is_header:
+                            run.bold = True
+                            run.font.color.rgb = RGBColor(0, 0, 0)
+                        
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        self._set_rtl(p)
+                        
+                    except Exception as e:
+                        continue
+            
+            # اضافه کردن فاصله بعد از جدول
+            self.doc.add_paragraph()
+            
         except Exception:
-            # اگر جدول واقعاً خراب است، کل داده را به متن عادی تبدیل می‌کند تا هرگز خطا ندهد
+            # اگر جدول واقعاً خراب است، کل داده را به متن عادی تبدیل می‌کند
             joined = "\n".join([" | ".join(r) for r in rows])
             self.add_text(joined)
             return
-
-        table.style = 'Table Grid'
-        for i, row_data in enumerate(rows):
-            for j, cell_data in enumerate(row_data):
-                try:
-                    cell = table.rows[i].cells[j]
-                    p = cell.paragraphs[0]
-                    run = p.add_run(cell_data)
-                    if re.search(r'[A-Za-z0-9]', cell_data):
-                        run.font.name = 'Times New Roman'
-                        run.font.size = Pt(11)
-                    else:
-                        run.font.name = 'B Nazanin'
-                        run.font.size = Pt(12)
-                        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    self._set_rtl(p)
-                except Exception as e:
-                    continue  # هرگز متوقف نشود
 
     # ---------------- متن ----------------
     def add_text(self, text):
