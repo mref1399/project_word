@@ -76,6 +76,26 @@ class SmartDocumentGenerator:
         
         tcPr.append(tcMar)
 
+    def _parse_bold_text(self, text):
+        """تجزیه متن و شناسایی بخش‌های bold شده با **"""
+        parts = []
+        pattern = r'\*\*(.*?)\*\*'
+        last_end = 0
+        
+        for match in re.finditer(pattern, text):
+            # متن قبل از **
+            if match.start() > last_end:
+                parts.append({'text': text[last_end:match.start()], 'bold': False})
+            # متن داخل **
+            parts.append({'text': match.group(1), 'bold': True})
+            last_end = match.end()
+        
+        # متن بعد از آخرین **
+        if last_end < len(text):
+            parts.append({'text': text[last_end:], 'bold': False})
+        
+        return parts if parts else [{'text': text, 'bold': False}]
+
     # ---------------- تشخیص نوع ----------------
     def detect_content_type(self, line):
         line = line.strip()
@@ -94,6 +114,8 @@ class SmartDocumentGenerator:
     # ---------------- تیتر ----------------
     def add_heading(self, text, level=1):
         text = re.sub(r'^#+\s*', '', text)
+        # حذف ** از عناوین
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
         text = self.text_processor.clean_text(text)
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -117,6 +139,8 @@ class SmartDocumentGenerator:
 
     # ---------------- کپشن ----------------
     def add_caption(self, text):
+        # حذف ** از کپشن
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
         p = self.doc.add_paragraph(self.text_processor.clean_text(text))
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         self._set_rtl(p)
@@ -170,26 +194,33 @@ class SmartDocumentGenerator:
                         self._set_cell_shading(cell, is_header)
                         self._set_cell_margins(cell)
                         
-                        # محتوای سلول
+                        # محتوای سلول با پشتیبانی از **bold**
                         p = cell.paragraphs[0]
                         p.paragraph_format.space_before = Pt(3)
                         p.paragraph_format.space_after = Pt(3)
                         
-                        run = p.add_run(cell_data)
+                        # پردازش متن برای bold
+                        parts = self._parse_bold_text(cell_data)
                         
-                        # فونت و اندازه
-                        if re.search(r'[A-Za-z0-9]', cell_data):
-                            run.font.name = 'Times New Roman'
-                            run.font.size = Pt(11)
-                        else:
-                            run.font.name = 'B Nazanin'
-                            run.font.size = Pt(12)
-                            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-                        
-                        # هدر را برجسته می‌کنیم
-                        if is_header:
-                            run.bold = True
-                            run.font.color.rgb = RGBColor(0, 0, 0)
+                        for part in parts:
+                            run = p.add_run(part['text'])
+                            
+                            # فونت و اندازه
+                            if re.search(r'[A-Za-z0-9]', part['text']):
+                                run.font.name = 'Times New Roman'
+                                run.font.size = Pt(11)
+                            else:
+                                run.font.name = 'B Nazanin'
+                                run.font.size = Pt(12)
+                                run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                            
+                            # اعمال bold
+                            if part['bold'] or is_header:
+                                run.bold = True
+                            
+                            # هدر را برجسته می‌کنیم
+                            if is_header:
+                                run.font.color.rgb = RGBColor(0, 0, 0)
                         
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                         self._set_rtl(p)
@@ -206,19 +237,28 @@ class SmartDocumentGenerator:
             self.add_text(joined)
             return
 
-    # ---------------- متن ----------------
+    # ---------------- متن با پشتیبانی از bold ----------------
     def add_text(self, text):
         text = self.text_processor.clean_text(text)
         if not text:
             return
+        
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
         self._set_rtl(p)
-        run = p.add_run(text)
-        run.font.name = 'B Nazanin'
-        run.font.size = Pt(14)
-        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+        
+        # پردازش متن برای bold
+        parts = self._parse_bold_text(text)
+        
+        for part in parts:
+            run = p.add_run(part['text'])
+            run.font.name = 'B Nazanin'
+            run.font.size = Pt(14)
+            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+            
+            if part['bold']:
+                run.bold = True
 
     # ---------------- پردازش کل ----------------
     def process_text(self, text):
