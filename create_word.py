@@ -56,7 +56,8 @@ class SmartDocumentGenerator:
 
     def add_text(self, text):
         text = self.text_processor.clean_text(text)
-        if not text.strip(): return
+        if not text.strip():
+            return
         p = self.doc.add_paragraph()
         self._set_rtl_para(p)
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
@@ -130,27 +131,29 @@ class SmartDocumentGenerator:
                 self.add_text(ln)
                 i += 1
 
-    # ⚙️ تلفیق با منطق اصلی تو: اصلاح XML بعد از ساخت سند
+    # ⚙️ منطق XML اصلاح‌شده طبق نسخه‌ی بی‌نقص قبلی
     def _post_fix_xml(self, stream):
         with tempfile.TemporaryDirectory() as tmpdir:
-            zip = ZipFile(stream, 'r')
-            zip.extractall(tmpdir)
+            zip_ref = ZipFile(stream, 'r')
+            zip_ref.extractall(tmpdir)
+            zip_ref.close()
 
-            xml_path = os.path.join(tmpdir, 'word', 'document.xml')
+            doc_xml = os.path.join(tmpdir, 'word/document.xml')
             parser = etree.XMLParser(remove_blank_text=True)
-            tree = etree.parse(xml_path, parser)
+            tree = etree.parse(doc_xml, parser)
             root = tree.getroot()
             ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
 
-            # حذف تگ‌های RTL اشتباه از جداول
+            # پاک‌سازی دقیق تگ‌های جهت‌دهی اشتباه
             for tbl in root.findall('.//w:tbl', ns):
                 tblPr = tbl.find('w:tblPr', ns)
-                if tblPr is not None:
-                    for bad_tag in ['w:bidiVisual', 'w:tblDir']:
-                        for el in tblPr.findall(bad_tag, ns):
-                            tblPr.remove(el)
+                if tblPr is None:
+                    tblPr = etree.SubElement(tbl, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblPr')
+                for bad_tag in ['w:bidiVisual', 'w:tblDir']:
+                    for el in tblPr.findall(bad_tag, ns):
+                        tblPr.remove(el)
 
-            # اطمینان از RTL کلی سند
+            # حفظ RTL کلی سند
             sectPr = root.find('.//w:sectPr', ns)
             if sectPr is not None:
                 rtlGutter = sectPr.find('w:rtlGutter', ns)
@@ -158,15 +161,15 @@ class SmartDocumentGenerator:
                     rtlGutter = etree.SubElement(sectPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rtlGutter')
                 rtlGutter.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', 'true')
 
-            tree.write(xml_path, pretty_print=True, encoding='utf-8', xml_declaration=True)
+            tree.write(doc_xml, pretty_print=True, encoding='utf-8', xml_declaration=True)
 
             fixed_path = os.path.join(tmpdir, 'data_fixed.docx')
-            with ZipFile(fixed_path, 'w') as out_zip:
-                for folder, _, files in os.walk(tmpdir):
-                    for f in files:
-                        path = os.path.join(folder, f)
-                        arcname = os.path.relpath(path, tmpdir)
-                        out_zip.write(path, arcname)
+            with ZipFile(fixed_path, 'w') as zip_out:
+                for foldername, subfolders, filenames in os.walk(tmpdir):
+                    for filename in filenames:
+                        file_path = os.path.join(foldername, filename)
+                        arcname = os.path.relpath(file_path, tmpdir)
+                        zip_out.write(file_path, arcname)
 
             with open(fixed_path, 'rb') as f:
                 return io.BytesIO(f.read())
@@ -198,7 +201,7 @@ def generate_doc():
 
 @app.route('/')
 def index():
-    return jsonify({'msg': 'نسخه تلفیقی Persian DOCX Generator — جهت فارسیِ کامل و جدول استاندارد ✅'})
+    return jsonify({'msg': 'نسخه تلفیقی Persian DOCX Generator — جهت فارسی کامل و جدول بی‌خطا ✅'})
 
 
 if __name__ == '__main__':
