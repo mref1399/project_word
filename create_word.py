@@ -50,6 +50,60 @@ class SmartDocumentGenerator:
         bidiVisual = OxmlElement('w:bidiVisual')
         tblPr.append(bidiVisual)
 
+    def _reverse_table_columns(self, table):
+        """معکوس کردن ترتیب ستون‌های جدول از چپ به راست به راست به چپ"""
+        for row in table.rows:
+            # استخراج محتوای تمام سلول‌ها
+            cells_content = []
+            for cell in row.cells:
+                # ذخیره تمام پاراگراف‌ها و فرمت‌بندی‌ها
+                cell_paragraphs = []
+                for paragraph in cell.paragraphs:
+                    para_info = {
+                        'text': paragraph.text,
+                        'runs': []
+                    }
+                    for run in paragraph.runs:
+                        run_info = {
+                            'text': run.text,
+                            'bold': run.bold,
+                            'italic': run.italic,
+                            'font_name': run.font.name,
+                            'font_size': run.font.size,
+                            'font_color': run.font.color.rgb if run.font.color.rgb else None
+                        }
+                        para_info['runs'].append(run_info)
+                    cell_paragraphs.append(para_info)
+                cells_content.append(cell_paragraphs)
+            
+            # معکوس کردن محتویات
+            cells_content.reverse()
+            
+            # بازنویسی محتویات در سلول‌ها
+            for idx, cell in enumerate(row.cells):
+                # پاک کردن محتوای فعلی
+                for paragraph in cell.paragraphs:
+                    p = paragraph._element
+                    p.getparent().remove(p)
+                
+                # اضافه کردن محتوای جدید
+                for para_info in cells_content[idx]:
+                    p = cell.add_paragraph()
+                    for run_info in para_info['runs']:
+                        run = p.add_run(run_info['text'])
+                        run.bold = run_info['bold']
+                        run.italic = run_info['italic']
+                        if run_info['font_name']:
+                            run.font.name = run_info['font_name']
+                        if run_info['font_size']:
+                            run.font.size = run_info['font_size']
+                        if run_info['font_color']:
+                            run.font.color.rgb = run_info['font_color']
+                    
+                    # تنظیم RTL برای پاراگراف
+                    self._set_rtl(p)
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
     def _set_cell_borders(self, cell):
         """تنظیم حاشیه‌های سلول برای ظاهر شکیل"""
         tc = cell._element
@@ -59,9 +113,9 @@ class SmartDocumentGenerator:
         for border_name in ['top', 'left', 'bottom', 'right']:
             border = OxmlElement(f'w:{border_name}')
             border.set(qn('w:val'), 'single')
-            border.set(qn('w:sz'), '12')  # ضخامت حاشیه
+            border.set(qn('w:sz'), '12')
             border.set(qn('w:space'), '0')
-            border.set(qn('w:color'), '000000')  # رنگ مشکی
+            border.set(qn('w:color'), '000000')
             tcBorders.append(border)
         
         tcPr.append(tcBorders)
@@ -71,7 +125,7 @@ class SmartDocumentGenerator:
         tc = cell._element
         tcPr = tc.get_or_add_tcPr()
         shading = OxmlElement('w:shd')
-        shading.set(qn('w:fill'), 'D9E2F3' if is_header else 'FFFFFF')  # آبی روشن برای هدر
+        shading.set(qn('w:fill'), 'D9E2F3' if is_header else 'FFFFFF')
         tcPr.append(shading)
 
     def _set_cell_margins(self, cell):
@@ -95,14 +149,11 @@ class SmartDocumentGenerator:
         last_end = 0
         
         for match in re.finditer(pattern, text):
-            # متن قبل از **
             if match.start() > last_end:
                 parts.append({'text': text[last_end:match.start()], 'bold': False})
-            # متن داخل **
             parts.append({'text': match.group(1), 'bold': True})
             last_end = match.end()
         
-        # متن بعد از آخرین **
         if last_end < len(text):
             parts.append({'text': text[last_end:], 'bold': False})
         
@@ -126,7 +177,6 @@ class SmartDocumentGenerator:
     # ---------------- تیتر ----------------
     def add_heading(self, text, level=1):
         text = re.sub(r'^#+\s*', '', text)
-        # حذف ** از عناوین
         text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
         text = self.text_processor.clean_text(text)
         p = self.doc.add_paragraph()
@@ -151,7 +201,6 @@ class SmartDocumentGenerator:
 
     # ---------------- کپشن ----------------
     def add_caption(self, text):
-        # حذف ** از کپشن
         text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
         p = self.doc.add_paragraph(self.text_processor.clean_text(text))
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -162,7 +211,7 @@ class SmartDocumentGenerator:
             run.font.size = Pt(13)
             run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-    # ---------------- جدول شکیل با فرمت‌بندی حرفه‌ای و راست به چپ ----------------
+    # ---------------- جدول شکیل با راست به چپ ----------------
     def add_table(self, lines):
         rows = []
         for ln in lines:
@@ -175,55 +224,48 @@ class SmartDocumentGenerator:
         if not rows:
             return
 
-        # اطمینان از یکنواختی تعداد ستون‌ها
         cols = max(len(r) for r in rows)
         rows = [r + [''] * (cols - len(r)) for r in rows]
 
-        # حذف خط جداکننده markdown (خط دوم با ---|---|---)
         if len(rows) > 1 and all(set(cell.strip()) <= {'-', ':', '|', ' '} for cell in rows[1]):
             rows.pop(1)
 
         if not rows:
             return
 
+        # معکوس کردن ترتیب ستون‌ها برای همه سطرها
+        rows = [list(reversed(row)) for row in rows]
+
         try:
             table = self.doc.add_table(rows=len(rows), cols=cols)
             table.style = 'Table Grid'
             
-            # تنظیم جهت راست به چپ برای جدول
+            # تنظیم RTL برای جدول
             self._set_table_rtl(table)
             
-            # تنظیم عرض جدول
             table.autofit = False
             table.allow_autofit = False
             
             for i, row_data in enumerate(rows):
-                is_header = (i == 0)  # سطر اول را هدر در نظر می‌گیریم
+                is_header = (i == 0)
                 
-                # معکوس کردن ترتیب ستون‌ها برای راست به چپ
-                reversed_row_data = list(reversed(row_data))
-                
-                for j, cell_data in enumerate(reversed_row_data):
+                for j, cell_data in enumerate(row_data):
                     try:
                         cell = table.rows[i].cells[j]
                         
-                        # تنظیمات ظاهری سلول
                         self._set_cell_borders(cell)
                         self._set_cell_shading(cell, is_header)
                         self._set_cell_margins(cell)
                         
-                        # محتوای سلول با پشتیبانی از **bold**
                         p = cell.paragraphs[0]
                         p.paragraph_format.space_before = Pt(3)
                         p.paragraph_format.space_after = Pt(3)
                         
-                        # پردازش متن برای bold
                         parts = self._parse_bold_text(cell_data)
                         
                         for part in parts:
                             run = p.add_run(part['text'])
                             
-                            # فونت و اندازه
                             if re.search(r'[A-Za-z0-9]', part['text']):
                                 run.font.name = 'Times New Roman'
                                 run.font.size = Pt(11)
@@ -232,11 +274,9 @@ class SmartDocumentGenerator:
                                 run.font.size = Pt(12)
                                 run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
                             
-                            # اعمال bold
                             if part['bold'] or is_header:
                                 run.bold = True
                             
-                            # هدر را برجسته می‌کنیم
                             if is_header:
                                 run.font.color.rgb = RGBColor(0, 0, 0)
                         
@@ -246,11 +286,9 @@ class SmartDocumentGenerator:
                     except Exception as e:
                         continue
             
-            # اضافه کردن فاصله بعد از جدول
             self.doc.add_paragraph()
             
         except Exception:
-            # اگر جدول واقعاً خراب است، کل داده را به متن عادی تبدیل می‌کند
             joined = "\n".join([" | ".join(r) for r in rows])
             self.add_text(joined)
             return
@@ -266,7 +304,6 @@ class SmartDocumentGenerator:
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
         self._set_rtl(p)
         
-        # پردازش متن برای bold
         parts = self._parse_bold_text(text)
         
         for part in parts:
@@ -335,7 +372,6 @@ def generate_word():
             download_name='document.docx'
         )
     except Exception as e:
-        # هرگونه استثناء را مهار می‌کند تا n8n هرگز 500 نگیرد
         return jsonify({'error': f'Safe Fail ⛔ {str(e)}'}), 200
 
 @app.route('/')
