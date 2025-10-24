@@ -204,11 +204,12 @@ class SmartDocumentGenerator:
                         
                         for part in parts:
                             run = p.add_run(part['text'])
-                            
-                            # فونت و اندازه
+                           
                             if re.search(r'[A-Za-z0-9]', part['text']):
                                 run.font.name = 'Times New Roman'
-                                run.font.size = Pt(11)
+                                run.font.size = Pt(12)
+                                run._element.rPr.rFonts.set(qn('w:ascii'), 'Times New Roman')
+                                run._element.rPr.rFonts.set(qn('w:hAnsi'), 'Times New Roman')
                             else:
                                 run.font.name = 'B Nazanin'
                                 run.font.size = Pt(12)
