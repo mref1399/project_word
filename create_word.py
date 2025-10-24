@@ -32,6 +32,26 @@ class SmartDocumentGenerator:
         s.page_width = Inches(8.27)
         s.top_margin = s.bottom_margin = s.left_margin = s.right_margin = Inches(1)
 
+        # اعمال تنظیمات فونت پیش‌فرض (Normal Style) برای جلوگیری از تداخل
+        style = self.doc.styles['Normal']
+        rPr = style.element.get_or_add_rPr()
+        
+        # 1. تنظیم فونت لاتین پیش‌فرض (Times New Roman 12pt)
+        rFonts = rPr.get_or_add_rFonts()
+        rFonts.set(qn('w:ascii'), 'Times New Roman')
+        rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+        style.font.size = Pt(12)
+        
+        # 2. تنظیم فونت فارسی پیش‌فرض (B Nazanin 14pt)
+        # B Nazanin برای Complex Script
+        rFonts.set(qn('w:cs'), 'B Nazanin')
+        
+        # 3. تنظیم اندازه فونت فارسی پیش‌فرض (14pt = 28 half-points)
+        szCs = OxmlElement('w:szCs')
+        szCs.set(qn('w:val'), str(2 * 14))
+        rPr.append(szCs)
+
+
     def _set_rtl(self, p):
         """تنظیم جهت پاراگراف به راست به چپ"""
         pPr = p._element.get_or_add_pPr()
@@ -131,17 +151,30 @@ class SmartDocumentGenerator:
     # ---------------- تیتر ----------------
     def add_heading(self, text, level=1):
         text = re.sub(r'^#+\s*', '', text)
-        # حذف ** از عناوین
-        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text) # حذف ** از عناوین
         text = self.text_processor.clean_text(text)
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         self._set_rtl(p)
         run = p.add_run(text)
         run.bold = True
+        
+        # --- اعمال قوی‌تر فونت برای تیتر ---
+        size_pt = 18 - level * 2
         run.font.name = 'B Nazanin'
-        run.font.size = Pt(18 - level * 2)
-        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+        run.font.size = Pt(size_pt)
+        
+        rPr = run._element.get_or_add_rPr()
+        
+        # تنظیم فونت فارسی در Complex Script
+        rFonts = rPr.get_or_add_rFonts()
+        rFonts.set(qn('w:cs'), 'B Nazanin')
+        
+        # تعیین اندازه دقیق برای اسکریپت پیچیده
+        szCs = OxmlElement('w:szCs')
+        szCs.set(qn('w:val'), str(2 * size_pt))
+        rPr.append(szCs)
+        # ------------------------------------
 
     # ---------------- فرمول ----------------
     def add_formula(self, text):
@@ -156,16 +189,29 @@ class SmartDocumentGenerator:
 
     # ---------------- کپشن ----------------
     def add_caption(self, text):
-        # حذف ** از کپشن
-        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text) # حذف ** از کپشن
         p = self.doc.add_paragraph(self.text_processor.clean_text(text))
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         self._set_rtl(p)
         for run in p.runs:
             run.bold = True
+            
+            # --- اعمال قوی‌تر فونت برای کپشن ---
+            size_pt = 13
             run.font.name = 'B Nazanin'
-            run.font.size = Pt(13)
-            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+            run.font.size = Pt(size_pt)
+            
+            rPr = run._element.get_or_add_rPr()
+            
+            # تنظیم فونت فارسی در Complex Script
+            rFonts = rPr.get_or_add_rFonts()
+            rFonts.set(qn('w:cs'), 'B Nazanin')
+            
+            # تعیین اندازه دقیق برای اسکریپت پیچیده
+            szCs = OxmlElement('w:szCs')
+            szCs.set(qn('w:val'), str(2 * size_pt))
+            rPr.append(szCs)
+            # ------------------------------------
 
     # ---------------- جدول شکیل با فرمت‌بندی حرفه‌ای ----------------
     def add_table(self, lines):
@@ -180,7 +226,6 @@ class SmartDocumentGenerator:
         if not rows:
             return
 
-        # اطمینان از یکنواختی تعداد ستون‌ها
         cols = max(len(r) for r in rows)
         rows = [r + [''] * (cols - len(r)) for r in rows]
 
@@ -195,10 +240,8 @@ class SmartDocumentGenerator:
             table = self.doc.add_table(rows=len(rows), cols=cols)
             table.style = 'Table Grid'
             
-            # تنظیم جهت کل جدول به راست به چپ
             self._set_table_rtl(table)
 
-            # تنظیم عرض جدول
             table.autofit = False
             table.allow_autofit = False
             
@@ -209,37 +252,49 @@ class SmartDocumentGenerator:
                     try:
                         cell = table.rows[i].cells[j]
                         
-                        # تنظیمات ظاهری سلول
                         self._set_cell_borders(cell)
                         self._set_cell_shading(cell, is_header)
                         self._set_cell_margins(cell)
                         
-                        # محتوای سلول با پشتیبانی از **bold**
                         p = cell.paragraphs[0]
                         p.paragraph_format.space_before = Pt(3)
                         p.paragraph_format.space_after = Pt(3)
                         
-                        # پردازش متن برای bold
                         parts = self._parse_bold_text(cell_data)
                         
                         for part in parts:
                             run = p.add_run(part['text'])
+                            rPr = run._element.get_or_add_rPr()
+                            rFonts = rPr.get_or_add_rFonts()
                             
-                            # --- تنظیم فونت و اندازه طبق درخواست شما (جدول) ---
                             if re.search(r'[A-Za-z0-9]', part['text']):
+                                # --- لاتین/اعداد: Times New Roman 12pt ---
+                                size_pt = 12
                                 run.font.name = 'Times New Roman'
-                                run.font.size = Pt(12)  # Times New Roman 12pt
+                                run.font.size = Pt(size_pt) 
+                                
+                                # اعمال برای تمام اسکریپت‌های لاتین و پیچیده (Complex Script)
+                                rFonts.set(qn('w:ascii'), 'Times New Roman')
+                                rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+                                rFonts.set(qn('w:cs'), 'Times New Roman') # مهم: برای اطمینان از اعمال روی اعداد/لاتین در محیط RTL
                             else:
+                                # --- فارسی/عربی: B Nazanin 14pt ---
+                                size_pt = 14
                                 run.font.name = 'B Nazanin'
-                                run.font.size = Pt(14)  # B Nazanin 14pt
-                                run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                                run.font.size = Pt(size_pt)
+                                
+                                # فقط Complex Script را برای فارسی تنظیم می‌کنیم
+                                rFonts.set(qn('w:cs'), 'B Nazanin')
+                                
+                                # تنظیم سایز دقیق برای اسکریپت پیچیده
+                                szCs = OxmlElement('w:szCs')
+                                szCs.set(qn('w:val'), str(2 * size_pt))
+                                rPr.append(szCs)
                             # --------------------------------------------------
 
-                            # اعمال bold
                             if part['bold'] or is_header:
                                 run.bold = True
                             
-                            # هدر را برجسته می‌کنیم
                             if is_header:
                                 run.font.color.rgb = RGBColor(0, 0, 0)
                         
@@ -249,11 +304,9 @@ class SmartDocumentGenerator:
                     except Exception as e:
                         continue
             
-            # اضافه کردن فاصله بعد از جدول
             self.doc.add_paragraph()
             
         except Exception:
-            # اگر جدول واقعاً خراب است، کل داده را به متن عادی تبدیل می‌کند
             joined = "\n".join([" | ".join(r) for r in rows])
             self.add_text(joined)
             return
@@ -269,20 +322,36 @@ class SmartDocumentGenerator:
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
         self._set_rtl(p)
         
-        # پردازش متن برای bold
         parts = self._parse_bold_text(text)
         
         for part in parts:
             run = p.add_run(part['text'])
+            rPr = run._element.get_or_add_rPr()
+            rFonts = rPr.get_or_add_rFonts()
             
-            # --- تنظیم فونت و اندازه طبق درخواست شما (متن عادی) ---
             if re.search(r'[A-Za-z0-9]', part['text']):
+                # --- لاتین/اعداد: Times New Roman 12pt ---
+                size_pt = 12
                 run.font.name = 'Times New Roman'
-                run.font.size = Pt(12) # Times New Roman 12pt
+                run.font.size = Pt(size_pt) 
+                
+                # اعمال برای تمام اسکریپت‌های لاتین و پیچیده
+                rFonts.set(qn('w:ascii'), 'Times New Roman')
+                rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+                rFonts.set(qn('w:cs'), 'Times New Roman') # مهم: برای اطمینان از اعمال روی اعداد/لاتین در محیط RTL
             else:
+                # --- فارسی/عربی: B Nazanin 14pt ---
+                size_pt = 14
                 run.font.name = 'B Nazanin'
-                run.font.size = Pt(14) # B Nazanin 14pt
-                run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                run.font.size = Pt(size_pt)
+                
+                # فقط Complex Script را برای فارسی تنظیم می‌کنیم
+                rFonts.set(qn('w:cs'), 'B Nazanin')
+                
+                # تنظیم سایز دقیق برای اسکریپت پیچیده
+                szCs = OxmlElement('w:szCs')
+                szCs.set(qn('w:val'), str(2 * size_pt))
+                rPr.append(szCs)
             # --------------------------------------------------
             
             if part['bold']:
@@ -345,7 +414,6 @@ def generate_word():
             download_name='document.docx'
         )
     except Exception as e:
-        # هرگونه استثناء را مهار می‌کند تا n8n هرگز 500 نگیرد
         return jsonify({'error': f'Safe Fail ⛔ {str(e)}'}), 200
 
 @app.route('/')
