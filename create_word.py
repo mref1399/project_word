@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from flask import Flask, request, send_file, jsonify
 from docx import Document
 from docx.shared import Pt, Inches
@@ -10,7 +11,9 @@ import tempfile, os, io, shutil, re
 
 app = Flask(__name__)
 
+# ========================================
 # 📚 پاک‌سازی دقیق متن فارسی
+# ========================================
 class PersianTextProcessor:
     def clean_text(self, text):
         if not text:
@@ -21,8 +24,9 @@ class PersianTextProcessor:
         text = re.sub(r'([(«])\s+', r'\1', text)
         return text.strip()
 
-
-# 🧩 سازنده هوشمند سند فارسی
+# ========================================
+# 🧩 سازنده هوشمند سند فارسی (اصلی)
+# ========================================
 class SmartDocumentGenerator:
     def __init__(self):
         self.doc = Document()
@@ -34,6 +38,7 @@ class SmartDocumentGenerator:
         section.page_width, section.page_height = Inches(8.27), Inches(11.69)
         section.left_margin = section.right_margin = section.top_margin = section.bottom_margin = Inches(1)
 
+    # تنظیم پاراگراف راست‌به‌چپ
     def _set_rtl_para(self, p):
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         pPr = p._element.get_or_add_pPr()
@@ -41,6 +46,7 @@ class SmartDocumentGenerator:
         bidi.set(qn('w:val'), '1')
         pPr.append(bidi)
 
+    # پردازش پررنگ‌ها (Bold)
     def _parse_bold(self, text):
         pattern = r'\*\*(.*?)\*\*'
         parts, last_end = [], 0
@@ -53,13 +59,15 @@ class SmartDocumentGenerator:
             parts.append({'text': text[last_end:], 'bold': False})
         return parts if parts else [{'text': text, 'bold': False}]
 
+    # اضافه کردن پاراگراف فارسی
     def add_text(self, text):
         text = self.text_processor.clean_text(text)
         if not text.strip():
             return
         p = self.doc.add_paragraph()
         self._set_rtl_para(p)
-        p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+        pf = p.paragraph_format
+        pf.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
 
         parts = self._parse_bold(text)
         for part in parts:
@@ -70,6 +78,7 @@ class SmartDocumentGenerator:
             if part['bold']:
                 run.bold = True
 
+    # اضافه کردن جدول
     def add_table(self, lines):
         rows = []
         for ln in lines:
@@ -80,23 +89,24 @@ class SmartDocumentGenerator:
                 rows.append(cols)
         if not rows:
             return
+
         cols = max(len(r) for r in rows)
         rows = [r + [''] * (cols - len(r)) for r in rows]
-
         table = self.doc.add_table(rows=0, cols=cols)
         table.style = 'Table Grid'
 
-        for i, r in enumerate(rows):
+        for i, row in enumerate(rows):
             tr = table.add_row().cells
-            for j in range(cols):
+            for j, cell_text in enumerate(row):
                 cell = tr[j]
                 p = cell.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
-                for run_obj in p.runs:
-                    p._element.remove(run_obj._element)
+                # پاک‌سازی Runs پیش‌فرض
+                for r in p.runs:
+                    p._element.remove(r._element)
 
-                parts = self._parse_bold(r[j])
+                parts = self._parse_bold(cell_text)
                 for part in parts:
                     run = p.add_run(part['text'])
                     run.font.name = 'B Nazanin'
@@ -105,13 +115,15 @@ class SmartDocumentGenerator:
                     if part['bold']:
                         run.bold = True
 
-                if i == 0:  # رنگ پس زمینه‌ی سطر اول
+                # رنگ ردیف اول جدول
+                if i == 0:
                     shd = OxmlElement('w:shd')
                     shd.set(qn('w:fill'), 'D9E2F3')
                     cell._tc.get_or_add_tcPr().append(shd)
 
         self.doc.add_paragraph()
 
+    # تحلیل و تصمیم خودکار روی متن ورودی
     def process_text(self, text):
         lines = text.split('\n')
         i = 0
@@ -121,28 +133,29 @@ class SmartDocumentGenerator:
                 i += 1
                 continue
             if '|' in ln and len(ln.split('|')) > 2:
-                blk = []
+                block = []
                 while i < len(lines) and '|' in lines[i]:
-                    blk.append(lines[i])
+                    block.append(lines[i])
                     i += 1
-                self.add_table(blk)
+                self.add_table(block)
             else:
                 self.add_text(ln)
                 i += 1
 
-    # ⚙️ بازنویسی نهایی مشابه کد اول
+    # ⚙️ ویرایش XML مستقیم پس از ساخت DOCX
     def _post_fix_xml(self, input_path, output_path):
         temp_dir = tempfile.mkdtemp()
         with ZipFile(input_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
 
         doc_xml = os.path.join(temp_dir, 'word/document.xml')
-        parser = etree.XMLParser(remove_blank_text=True)
+        parser = etree.XMLParser(remove_blank_text=False, resolve_entities=False)
         tree = etree.parse(doc_xml, parser)
         root = tree.getroot()
+
         ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
 
-        # حذف جهت‌دهی اشتباه جداول
+        # حذف تگ‌های جهت‌دهی اشتباه در جداول
         for tbl in root.findall('.//w:tbl', ns):
             tblPr = tbl.find('w:tblPr', ns)
             if tblPr is None:
@@ -151,18 +164,23 @@ class SmartDocumentGenerator:
                 for el in tblPr.findall(bad_tag, ns):
                     tblPr.remove(el)
 
-        # حفظ RTL کلی صفحه
+        # اطمینان از RTL بودن کل صفحه
         sectPr = root.find('.//w:sectPr', ns)
         if sectPr is not None:
             rtlGutter = sectPr.find('w:rtlGutter', ns)
             if rtlGutter is None:
-                rtlGutter = etree.SubElement(sectPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rtlGutter')
+                rtlGutter = etree.SubElement(
+                    sectPr,
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rtlGutter'
+                )
             rtlGutter.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', 'true')
 
-        tree.write(doc_xml, pretty_print=True, encoding='utf-8', xml_declaration=True)
+        # بازنویسی XML (با حفظ Encoding اصلی)
+        tree.write(doc_xml, encoding='utf-8', xml_declaration=True, standalone=True)
 
-        with ZipFile(output_path, 'w') as zip_out:
-            for foldername, subfolders, filenames in os.walk(temp_dir):
+        # ساخت DOCX جدید
+        with ZipFile(output_path, 'w', compression=ZipFile.ZIP_DEFLATED) as zip_out:
+            for foldername, _, filenames in os.walk(temp_dir):
                 for filename in filenames:
                     file_path = os.path.join(foldername, filename)
                     arcname = os.path.relpath(file_path, temp_dir)
@@ -171,24 +189,30 @@ class SmartDocumentGenerator:
         shutil.rmtree(temp_dir)
         return output_path
 
-    # ذخیره و اصلاح نهایی (روش مطمئن کد اول)
+    # ذخیره و خروجی نهایی برای ارسال در HTTP
     def save_to_stream(self):
         tmp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
         self.doc.save(tmp_input.name)
 
         tmp_output = tempfile.NamedTemporaryFile(delete=False, suffix='_fixed.docx')
-        fixed_path = self._post_fix_xml(tmp_input.name, tmp_output.name)
+        fixed = self._post_fix_xml(tmp_input.name, tmp_output.name)
 
-        with open(fixed_path, 'rb') as f:
-            stream = io.BytesIO(f.read())
+        with open(fixed, 'rb') as f:
+            data = f.read()
 
-        tmp_input.close(); tmp_output.close()
-        os.unlink(tmp_input.name); os.unlink(tmp_output.name)
+        # پاک‌سازی فایل‌های موقت
+        for path in [tmp_input.name, tmp_output.name, fixed]:
+            if os.path.exists(path):
+                os.remove(path)
+
+        stream = io.BytesIO(data)
         stream.seek(0)
         return stream
 
 
-# 🧠 مسیر Flask برای تولید فایل
+# ========================================
+# 🌐 مسیر Flask‌ها
+# ========================================
 @app.route('/generate', methods=['POST'])
 def generate_doc():
     data = request.get_json(force=True)
@@ -196,6 +220,7 @@ def generate_doc():
     gen = SmartDocumentGenerator()
     gen.process_text(text)
     stream = gen.save_to_stream()
+
     return send_file(
         stream,
         as_attachment=True,
@@ -203,11 +228,14 @@ def generate_doc():
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     )
 
-
 @app.route('/')
 def index():
-    return jsonify({'msg': 'Persian DOCX Generator — نسخه نهایی با سازگاری کامل Word ✅'})
+    return jsonify({
+        'msg': '📄 Persian DOCX Generator — نسخه نهایی. کاملاً سازگار با Word ✅'
+    })
 
-
+# ========================================
+# 🚀 اجرای سرور
+# ========================================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8001)
