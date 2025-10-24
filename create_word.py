@@ -38,6 +38,18 @@ class SmartDocumentGenerator:
         bidi.set(qn('w:val'), '1')
         pPr.append(bidi)
 
+    def _set_table_rtl(self, table):
+        """تنظیم جهت راست به چپ برای کل جدول"""
+        tbl = table._element
+        tblPr = tbl.tblPr
+        if tblPr is None:
+            tblPr = OxmlElement('w:tblPr')
+            tbl.insert(0, tblPr)
+        
+        # تنظیم bidi برای جدول
+        bidiVisual = OxmlElement('w:bidiVisual')
+        tblPr.append(bidiVisual)
+
     def _set_cell_borders(self, cell):
         """تنظیم حاشیه‌های سلول برای ظاهر شکیل"""
         tc = cell._element
@@ -150,7 +162,7 @@ class SmartDocumentGenerator:
             run.font.size = Pt(13)
             run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-    # ---------------- جدول شکیل با فرمت‌بندی حرفه‌ای ----------------
+    # ---------------- جدول شکیل با فرمت‌بندی حرفه‌ای و راست به چپ ----------------
     def add_table(self, lines):
         rows = []
         for ln in lines:
@@ -178,6 +190,9 @@ class SmartDocumentGenerator:
             table = self.doc.add_table(rows=len(rows), cols=cols)
             table.style = 'Table Grid'
             
+            # تنظیم جهت راست به چپ برای جدول
+            self._set_table_rtl(table)
+            
             # تنظیم عرض جدول
             table.autofit = False
             table.allow_autofit = False
@@ -185,7 +200,10 @@ class SmartDocumentGenerator:
             for i, row_data in enumerate(rows):
                 is_header = (i == 0)  # سطر اول را هدر در نظر می‌گیریم
                 
-                for j, cell_data in enumerate(row_data):
+                # معکوس کردن ترتیب ستون‌ها برای راست به چپ
+                reversed_row_data = list(reversed(row_data))
+                
+                for j, cell_data in enumerate(reversed_row_data):
                     try:
                         cell = table.rows[i].cells[j]
                         
