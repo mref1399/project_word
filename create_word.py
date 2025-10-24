@@ -1,261 +1,328 @@
-# -*- coding: utf-8 -*-
 from flask import Flask, request, send_file, jsonify
 from docx import Document
-from docx.shared import Pt, Inches
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from lxml import etree
-from zipfile import ZipFile
-import tempfile, os, io, shutil, re
+from docx.oxml import OxmlElement
+import io, re
 
 app = Flask(__name__)
 
-# ========================================
-# 📚 پاک‌سازی دقیق متن فارسی
-# ========================================
+# ---------------- فارسی‌ساز ----------------
 class PersianTextProcessor:
     def clean_text(self, text):
         if not text:
             return ''
-        text = text.replace('ي', 'ی').replace('ك', 'ک').replace('ە', 'ه')
+        text = text.replace('ي', 'ی').replace('ك', 'ک').replace('ە', 'ه').replace('ؤ', 'و')
         text = re.sub(r'\s+', ' ', text)
-        text = re.sub(r'\s+([.,،؛:!؟»\)])', r'\1', text)
+        text = re.sub(r'\s+([.,،؛:!؟»\\)])', r'\1', text)
         text = re.sub(r'([(«])\s+', r'\1', text)
         return text.strip()
 
-
-# ========================================
-# 🧩 سازنده هوشمند سند فارسی
-# ========================================
+# ---------------- سازنده سند ----------------
 class SmartDocumentGenerator:
     def __init__(self):
         self.doc = Document()
         self.text_processor = PersianTextProcessor()
-        self._setup_page()
+        self._setup_doc()
 
-    def _setup_page(self):
-        section = self.doc.sections[0]
-        section.page_width, section.page_height = Inches(8.27), Inches(11.69)
-        section.left_margin = section.right_margin = section.top_margin = section.bottom_margin = Inches(1)
+    def _setup_doc(self):
+        s = self.doc.sections[0]
+        s.page_height = Inches(11.69)
+        s.page_width = Inches(8.27)
+        s.top_margin = s.bottom_margin = s.left_margin = s.right_margin = Inches(1)
 
-    # 📌 تنظیم پاراگراف راست‌به‌چپ
-    def _set_rtl_para(self, p):
-        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    def _set_rtl(self, p):
         pPr = p._element.get_or_add_pPr()
         bidi = OxmlElement('w:bidi')
         bidi.set(qn('w:val'), '1')
         pPr.append(bidi)
 
-    # پردازش پررنگ‌ها (Bold)
-    def _parse_bold(self, text):
+    def _set_cell_borders(self, cell):
+        """تنظیم حاشیه‌های سلول برای ظاهر شکیل"""
+        tc = cell._element
+        tcPr = tc.get_or_add_tcPr()
+        
+        tcBorders = OxmlElement('w:tcBorders')
+        for border_name in ['top', 'left', 'bottom', 'right']:
+            border = OxmlElement(f'w:{border_name}')
+            border.set(qn('w:val'), 'single')
+            border.set(qn('w:sz'), '12')  # ضخامت حاشیه
+            border.set(qn('w:space'), '0')
+            border.set(qn('w:color'), '000000')  # رنگ مشکی
+            tcBorders.append(border)
+        
+        tcPr.append(tcBorders)
+
+    def _set_cell_shading(self, cell, is_header=False):
+        """رنگ پس‌زمینه برای سلول"""
+        tc = cell._element
+        tcPr = tc.get_or_add_tcPr()
+        shading = OxmlElement('w:shd')
+        shading.set(qn('w:fill'), 'D9E2F3' if is_header else 'FFFFFF')  # آبی روشن برای هدر
+        tcPr.append(shading)
+
+    def _set_cell_margins(self, cell):
+        """فاصله داخلی سلول"""
+        tc = cell._element
+        tcPr = tc.get_or_add_tcPr()
+        tcMar = OxmlElement('w:tcMar')
+        
+        for margin_name in ['top', 'left', 'bottom', 'right']:
+            margin = OxmlElement(f'w:{margin_name}')
+            margin.set(qn('w:w'), '100')
+            margin.set(qn('w:type'), 'dxa')
+            tcMar.append(margin)
+        
+        tcPr.append(tcMar)
+
+    def _parse_bold_text(self, text):
+        """تجزیه متن و شناسایی بخش‌های bold شده با **"""
+        parts = []
         pattern = r'\*\*(.*?)\*\*'
-        parts, last_end = [], 0
-        for m in re.finditer(pattern, text):
-            if m.start() > last_end:
-                parts.append({'text': text[last_end:m.start()], 'bold': False})
-            parts.append({'text': m.group(1), 'bold': True})
-            last_end = m.end()
+        last_end = 0
+        
+        for match in re.finditer(pattern, text):
+            # متن قبل از **
+            if match.start() > last_end:
+                parts.append({'text': text[last_end:match.start()], 'bold': False})
+            # متن داخل **
+            parts.append({'text': match.group(1), 'bold': True})
+            last_end = match.end()
+        
+        # متن بعد از آخرین **
         if last_end < len(text):
             parts.append({'text': text[last_end:], 'bold': False})
+        
         return parts if parts else [{'text': text, 'bold': False}]
 
-    # ✍️ اضافه کردن پاراگراف
-    def add_text(self, text):
+    # ---------------- تشخیص نوع ----------------
+    def detect_content_type(self, line):
+        line = line.strip()
+        if not line:
+            return 'empty'
+        if '|' in line and len(line.split('|')) > 2:
+            return 'table'
+        if re.match(r'^#+', line):
+            return 'heading'
+        if re.search(r'\$\$.*?\$\$|\$.*?\$', line):
+            return 'formula'
+        if re.match(r'^(شکل|جدول)\s*\d+', line):
+            return 'caption'
+        return 'text'
+
+    # ---------------- تیتر ----------------
+    def add_heading(self, text, level=1):
+        text = re.sub(r'^#+\s*', '', text)
+        # حذف ** از عناوین
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
         text = self.text_processor.clean_text(text)
-        if not text.strip():
-            return
         p = self.doc.add_paragraph()
-        self._set_rtl_para(p)
-        pf = p.paragraph_format
-        pf.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        self._set_rtl(p)
+        run = p.add_run(text)
+        run.bold = True
+        run.font.name = 'B Nazanin'
+        run.font.size = Pt(18 - level * 2)
+        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-        parts = self._parse_bold(text)
-        for part in parts:
-            run = p.add_run(part['text'])
+    # ---------------- فرمول ----------------
+    def add_formula(self, text):
+        formulas = re.findall(r'\$\$.*?\$\$|\$.*?\$', text)
+        for f in formulas:
+            f = f.strip('$').strip()
+            p = self.doc.add_paragraph(f)
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            r = p.runs[0]
+            r.font.name = 'Cambria Math'
+            r.font.size = Pt(14)
+
+    # ---------------- کپشن ----------------
+    def add_caption(self, text):
+        # حذف ** از کپشن
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        p = self.doc.add_paragraph(self.text_processor.clean_text(text))
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        self._set_rtl(p)
+        for run in p.runs:
+            run.bold = True
             run.font.name = 'B Nazanin'
+            run.font.size = Pt(13)
             run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-            run.font.size = Pt(14)
-            if part['bold']:
-                run.bold = True
 
-    # ✏️ اضافه کردن جدول
+    # ---------------- جدول شکیل با فرمت‌بندی حرفه‌ای ----------------
     def add_table(self, lines):
         rows = []
         for ln in lines:
             if not ln.strip():
                 continue
-            cols = [self.text_processor.clean_text(x.strip()) for x in ln.strip('|').split('|')]
-            if len(cols) > 1:
-                rows.append(cols)
+            parts = [self.text_processor.clean_text(p.strip()) for p in ln.strip('|').split('|')]
+            if len(parts) > 1:
+                rows.append(parts)
+
         if not rows:
             return
 
+        # اطمینان از یکنواختی تعداد ستون‌ها
         cols = max(len(r) for r in rows)
         rows = [r + [''] * (cols - len(r)) for r in rows]
-        table = self.doc.add_table(rows=0, cols=cols)
-        table.style = 'Table Grid'
 
-        for i, row in enumerate(rows):
-            tr = table.add_row().cells
-            for j, cell_text in enumerate(row):
-                cell = tr[j]
-                p = cell.paragraphs[0]
-                p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                for r in p.runs:
-                    p._element.remove(r._element)
+        # حذف خط جداکننده markdown (خط دوم با ---|---|---)
+        if len(rows) > 1 and all(set(cell.strip()) <= {'-', ':', '|', ' '} for cell in rows[1]):
+            rows.pop(1)
 
-                parts = self._parse_bold(cell_text)
-                for part in parts:
-                    run = p.add_run(part['text'])
-                    run.font.name = 'B Nazanin'
-                    run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-                    run.font.size = Pt(13)
-                    if part['bold']:
-                        run.bold = True
+        if not rows:
+            return
 
-                if i == 0:  # رنگ ردیف اول
-                    shd = OxmlElement('w:shd')
-                    shd.set(qn('w:fill'), 'D9E2F3')
-                    cell._tc.get_or_add_tcPr().append(shd)
+        try:
+            table = self.doc.add_table(rows=len(rows), cols=cols)
+            table.style = 'Table Grid'
+            
+            # تنظیم عرض جدول
+            table.autofit = False
+            table.allow_autofit = False
+            
+            for i, row_data in enumerate(rows):
+                is_header = (i == 0)  # سطر اول را هدر در نظر می‌گیریم
+                
+                for j, cell_data in enumerate(row_data):
+                    try:
+                        cell = table.rows[i].cells[j]
+                        
+                        # تنظیمات ظاهری سلول
+                        self._set_cell_borders(cell)
+                        self._set_cell_shading(cell, is_header)
+                        self._set_cell_margins(cell)
+                        
+                        # محتوای سلول با پشتیبانی از **bold**
+                        p = cell.paragraphs[0]
+                        p.paragraph_format.space_before = Pt(3)
+                        p.paragraph_format.space_after = Pt(3)
+                        
+                        # پردازش متن برای bold
+                        parts = self._parse_bold_text(cell_data)
+                        
+                        for part in parts:
+                            run = p.add_run(part['text'])
+                            
+                            # فونت و اندازه
+                            if re.search(r'[A-Za-z0-9]', part['text']):
+                                run.font.name = 'Times New Roman'
+                                run.font.size = Pt(11)
+                            else:
+                                run.font.name = 'B Nazanin'
+                                run.font.size = Pt(12)
+                                run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                            
+                            # اعمال bold
+                            if part['bold'] or is_header:
+                                run.bold = True
+                            
+                            # هدر را برجسته می‌کنیم
+                            if is_header:
+                                run.font.color.rgb = RGBColor(0, 0, 0)
+                        
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        self._set_rtl(p)
+                        
+                    except Exception as e:
+                        continue
+            
+            # اضافه کردن فاصله بعد از جدول
+            self.doc.add_paragraph()
+            
+        except Exception:
+            # اگر جدول واقعاً خراب است، کل داده را به متن عادی تبدیل می‌کند
+            joined = "\n".join([" | ".join(r) for r in rows])
+            self.add_text(joined)
+            return
 
-        self.doc.add_paragraph()
+    # ---------------- متن با پشتیبانی از bold ----------------
+    def add_text(self, text):
+        text = self.text_processor.clean_text(text)
+        if not text:
+            return
+        
+        p = self.doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+        self._set_rtl(p)
+        
+        # پردازش متن برای bold
+        parts = self._parse_bold_text(text)
+        
+        for part in parts:
+            run = p.add_run(part['text'])
+            run.font.name = 'B Nazanin'
+            run.font.size = Pt(14)
+            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+            
+            if part['bold']:
+                run.bold = True
 
-    # تحلیل خودکار روی متن ورودی
+    # ---------------- پردازش کل ----------------
     def process_text(self, text):
+        if not text or not isinstance(text, str):
+            self.add_text("⚠️ ورودی خالی یا نامعتبر بود.")
+            return
+
         lines = text.split('\n')
         i = 0
         while i < len(lines):
             ln = lines[i]
-            if not ln.strip():
+            t = self.detect_content_type(ln)
+
+            if t == 'empty':
                 i += 1
                 continue
-            if '|' in ln and len(ln.split('|')) > 2:
+            elif t == 'table':
                 block = []
                 while i < len(lines) and '|' in lines[i]:
                     block.append(lines[i])
                     i += 1
                 self.add_table(block)
+                continue
+            elif t == 'heading':
+                level = len(re.match(r'^#+', ln).group())
+                self.add_heading(ln, level=min(level, 3))
+            elif t == 'formula':
+                self.add_formula(ln)
+            elif t == 'caption':
+                self.add_caption(ln)
             else:
                 self.add_text(ln)
-                i += 1
+            i += 1
 
-    # 🧩 رفع کامل مشکلات راست‌به‌چپ در XML
-    def _post_fix_xml(self, input_path, output_path):
-        temp_dir = tempfile.mkdtemp()
-        with ZipFile(input_path, 'r') as zip_ref:
-            zip_ref.extractall(temp_dir)
-
-        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
-        doc_xml = os.path.join(temp_dir, 'word/document.xml')
-        parser = etree.XMLParser(remove_blank_text=False, resolve_entities=False)
-        tree = etree.parse(doc_xml, parser)
-        root = tree.getroot()
-
-        # حذف تگ‌های جهت‌دهی اشتباه
-        for bad_tag in ['w:bidiVisual', 'w:tblDir']:
-            for el in root.findall(f".//{bad_tag}", ns):
-                parent = el.getparent()
-                if parent is not None:
-                    parent.remove(el)
-
-        # اضافه‌کردن جهت RTL برای تمام پاراگراف‌ها
-        for para in root.findall('.//w:p', ns):
-            pPr = para.find('w:pPr', ns)
-            if pPr is None:
-                pPr = etree.SubElement(para, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr')
-            bidi = pPr.find('w:bidi', ns)
-            if bidi is None:
-                bidi = etree.SubElement(pPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bidi')
-                bidi.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '1')
-
-        # جهت‌دهی جدول‌ها
-        for tbl in root.findall('.//w:tbl', ns):
-            tblPr = tbl.find('w:tblPr', ns)
-            if tblPr is None:
-                tblPr = etree.SubElement(tbl, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblPr')
-            rtl = etree.SubElement(tblPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bidi')
-            rtl.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '1')
-
-        # راست‌چین کردن کل سند
-        sectPr = root.find('.//w:sectPr', ns)
-        if sectPr is not None:
-            rtlGutter = sectPr.find('w:rtlGutter', ns)
-            if rtlGutter is None:
-                rtlGutter = etree.SubElement(sectPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rtlGutter')
-            rtlGutter.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', 'true')
-
-        tree.write(doc_xml, encoding='utf-8', xml_declaration=True, standalone=True)
-
-        # 🎨 تنظیم فونت پیش‌فرض در styles.xml
-        styles_xml = os.path.join(temp_dir, 'word/styles.xml')
-        if os.path.exists(styles_xml):
-            stree = etree.parse(styles_xml, parser)
-            sroot = stree.getroot()
-            fonts = sroot.findall('.//w:rFonts', ns)
-            for f in fonts:
-                f.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}ascii', 'B Nazanin')
-                f.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}hAnsi', 'B Nazanin')
-                f.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}cs', 'B Nazanin')
-            stree.write(styles_xml, encoding='utf-8', xml_declaration=True, standalone=True)
-
-        # ذخیره DOCX جدید
-        with ZipFile(output_path, 'w', compression=ZipFile.ZIP_DEFLATED) as zip_out:
-            for foldername, _, filenames in os.walk(temp_dir):
-                for filename in filenames:
-                    file_path = os.path.join(foldername, filename)
-                    arcname = os.path.relpath(file_path, temp_dir)
-                    zip_out.write(file_path, arcname)
-
-        shutil.rmtree(temp_dir)
-        return output_path
-
-    # خروجی نهایی برای پاسخ HTTP
     def save_to_stream(self):
-        tmp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
-        self.doc.save(tmp_input.name)
+        buffer = io.BytesIO()
+        self.doc.save(buffer)
+        buffer.seek(0)
+        return buffer
 
-        tmp_output = tempfile.NamedTemporaryFile(delete=False, suffix='_fixed.docx')
-        fixed = self._post_fix_xml(tmp_input.name, tmp_output.name)
-
-        with open(fixed, 'rb') as f:
-            data = f.read()
-
-        for path in [tmp_input.name, tmp_output.name, fixed]:
-            if os.path.exists(path):
-                os.remove(path)
-
-        stream = io.BytesIO(data)
-        stream.seek(0)
-        return stream
-
-
-# ========================================
-# 🌐 مسیرهای Flask
-# ========================================
+# ---------------- Flask route ----------------
 @app.route('/generate', methods=['POST'])
-def generate_doc():
-    data = request.get_json(force=True)
-    text = data.get('text', '')
-    gen = SmartDocumentGenerator()
-    gen.process_text(text)
-    stream = gen.save_to_stream()
-
-    return send_file(
-        stream,
-        as_attachment=True,
-        download_name='persian_doc_final.docx',
-        mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    )
-
+def generate_word():
+    try:
+        data = request.get_json(force=True, silent=True)
+        if not data or 'text' not in data:
+            return jsonify({'error': 'متن الزامی است'}), 400
+        text = data.get('text', '')
+        gen = SmartDocumentGenerator()
+        gen.process_text(text)
+        stream = gen.save_to_stream()
+        return send_file(
+            stream,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            as_attachment=True,
+            download_name='document.docx'
+        )
+    except Exception as e:
+        # هرگونه استثناء را مهار می‌کند تا n8n هرگز 500 نگیرد
+        return jsonify({'error': f'Safe Fail ⛔ {str(e)}'}), 200
 
 @app.route('/')
-def index():
-    return jsonify({'msg': '📄 Persian DOCX Generator — نسخه نهایی، کاملاً سازگار با Word ✅'})
+def home():
+    return jsonify({'message': 'Persian DOCX Generator — Safe Mode ✅'})
 
-
-# ========================================
-# 🚀 اجرای سرور Flask
-# ========================================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8001)
