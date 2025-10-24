@@ -2,6 +2,7 @@ from flask import Flask, request, send_file, jsonify
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import io, re
@@ -89,7 +90,7 @@ class SmartDocumentGenerator:
         tbl = OxmlElement('w:tbl')
         tblPr = OxmlElement('w:tblPr')
         bidiVisual = OxmlElement('w:bidiVisual')
-        bidiVisual.set(qn('w:val'), 'true')
+        bidiVisual.set(qn('w:val'), 'false')
         tblPr.insert(0, bidiVisual)
         tbl.append(tblPr)
 
