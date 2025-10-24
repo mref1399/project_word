@@ -39,7 +39,6 @@ class SmartDocumentGenerator:
         pPr.append(bidi)
 
     def _set_cell_borders(self, cell):
-        """تنظیم حاشیه سلول‌ها"""
         tc = cell._element
         tcPr = tc.get_or_add_tcPr()
         tcBorders = OxmlElement('w:tcBorders')
@@ -53,7 +52,6 @@ class SmartDocumentGenerator:
         tcPr.append(tcBorders)
 
     def _set_cell_shading(self, cell, is_header=False):
-        """رنگ پس‌زمینه سلول"""
         tc = cell._element
         tcPr = tc.get_or_add_tcPr()
         shading = OxmlElement('w:shd')
@@ -61,8 +59,8 @@ class SmartDocumentGenerator:
         tcPr.append(shading)
 
     def _set_cell_margins(self, cell):
-        """حاشیه داخلی سلول"""
-        tcPr = cell._element.get_or_add_tcPr()
+        tc = cell._element
+        tcPr = tc.get_or_add_tcPr()
         tcMar = OxmlElement('w:tcMar')
         for margin_name in ['top', 'left', 'bottom', 'right']:
             margin = OxmlElement(f'w:{margin_name}')
@@ -72,8 +70,9 @@ class SmartDocumentGenerator:
         tcPr.append(tcMar)
 
     def _parse_bold_text(self, text):
-        """شناسایی بخش‌های **bold**"""
-        parts, pattern, last_end = [], r'\*\*(.*?)\*\*', 0
+        parts = []
+        pattern = r'\*\*(.*?)\*\*'
+        last_end = 0
         for match in re.finditer(pattern, text):
             if match.start() > last_end:
                 parts.append({'text': text[last_end:match.start()], 'bold': False})
@@ -83,7 +82,6 @@ class SmartDocumentGenerator:
             parts.append({'text': text[last_end:], 'bold': False})
         return parts if parts else [{'text': text, 'bold': False}]
 
-    # ---------------- تشخیص نوع محتوا ----------------
     def detect_content_type(self, line):
         line = line.strip()
         if not line:
@@ -114,9 +112,9 @@ class SmartDocumentGenerator:
 
     # ---------------- فرمول ----------------
     def add_formula(self, text):
-        for f in re.findall(r'\$\$.*?\$\$|\$.*?\$', text):
-            formula_text = f.strip('$').strip()
-            p = self.doc.add_paragraph(formula_text)
+        formulas = re.findall(r'\$\$.*?\$\$|\$.*?\$', text)
+        for f in formulas:
+            p = self.doc.add_paragraph(f.strip('$').strip())
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
             r = p.runs[0]
             r.font.name = 'Cambria Math'
@@ -143,53 +141,56 @@ class SmartDocumentGenerator:
             parts = [self.text_processor.clean_text(p.strip()) for p in ln.strip('|').split('|')]
             if len(parts) > 1:
                 rows.append(parts)
+
         if not rows:
             return
 
         cols = max(len(r) for r in rows)
         rows = [r + [''] * (cols - len(r)) for r in rows]
 
-        if len(rows) > 1 and all(set(c.strip()) <= {'-', ':', '|', ' '} for c in rows[1]):
+        if len(rows) > 1 and all(set(cell.strip()) <= {'-', ':', '|', ' '} for cell in rows[1]):
             rows.pop(1)
 
-        table = self.doc.add_table(rows=len(rows), cols=cols)
-        table.style = 'Table Grid'
-        table.autofit = False
-        table.allow_autofit = False
+        try:
+            table = self.doc.add_table(rows=len(rows), cols=cols)
+            table.style = 'Table Grid'
+            table.autofit = False
+            table.allow_autofit = False
 
-        for i, row_data in enumerate(rows):
-            is_header = (i == 0)
-            for j, cell_data in enumerate(row_data):
-                cell = table.rows[i].cells[j]
-                self._set_cell_borders(cell)
-                self._set_cell_shading(cell, is_header)
-                self._set_cell_margins(cell)
+            for i, row_data in enumerate(rows):
+                is_header = (i == 0)
+                for j, cell_data in enumerate(row_data):
+                    cell = table.rows[i].cells[j]
+                    self._set_cell_borders(cell)
+                    self._set_cell_shading(cell, is_header)
+                    self._set_cell_margins(cell)
+                    p = cell.paragraphs[0]
+                    p.paragraph_format.space_before = Pt(3)
+                    p.paragraph_format.space_after = Pt(3)
+                    parts = self._parse_bold_text(cell_data)
 
-                p = cell.paragraphs[0]
-                p.paragraph_format.space_before = Pt(3)
-                p.paragraph_format.space_after = Pt(3)
-                parts = self._parse_bold_text(cell_data)
+                    for part in parts:
+                        run = p.add_run(part['text'])
+                        if re.search(r'[A-Za-z0-9]', part['text']):
+                            run.font.name = 'Times New Roman'
+                            run.font.size = Pt(12)
+                            run._element.rPr.rFonts.set(qn('w:ascii'), 'Times New Roman')
+                            run._element.rPr.rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+                        else:
+                            run.font.name = 'B Nazanin'
+                            run.font.size = Pt(12)
+                            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-                for part in parts:
-                    run = p.add_run(part['text'])
-                    if re.search(r'[A-Za-z0-9]', part['text']):
-                        run.font.name = 'Times New Roman'
-                        run.font.size = Pt(12)
-                        run._element.rPr.rFonts.set(qn('w:ascii'), 'Times New Roman')
-                        run._element.rPr.rFonts.set(qn('w:hAnsi'), 'Times New Roman')
-                    else:
-                        run.font.name = 'B Nazanin'
-                        run.font.size = Pt(12)
-                        run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                        if part['bold'] or is_header:
+                            run.bold = True
+                            run.font.color.rgb = RGBColor(0, 0, 0)
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    self._set_rtl(p)
 
-                    if part['bold'] or is_header:
-                        run.bold = True
-                    if is_header:
-                        run.font.color.rgb = RGBColor(0, 0, 0)
-
-                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                self._set_rtl(p)
-        self.doc.add_paragraph()
+            self.doc.add_paragraph()
+        except Exception:
+            joined = "\n".join([" | ".join(r) for r in rows])
+            self.add_text(joined)
 
     # ---------------- متن اصلی ----------------
     def add_text(self, text):
@@ -206,7 +207,7 @@ class SmartDocumentGenerator:
         for part in parts:
             run = p.add_run(part['text'])
 
-            # ✅ تشخیص زبان و فونت
+            # 🔍 تشخیص انگلیسی / فارسی
             if re.search(r'[A-Za-z0-9]', part['text']):
                 run.font.name = 'Times New Roman'
                 run.font.size = Pt(12)
@@ -217,7 +218,7 @@ class SmartDocumentGenerator:
                 run.font.size = Pt(14)
                 run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-            if part.get('bold'):
+            if part['bold']:
                 run.bold = True
 
     # ---------------- پردازش کل متن ----------------
@@ -231,7 +232,6 @@ class SmartDocumentGenerator:
         while i < len(lines):
             ln = lines[i]
             t = self.detect_content_type(ln)
-
             if t == 'empty':
                 i += 1
                 continue
@@ -254,10 +254,10 @@ class SmartDocumentGenerator:
             i += 1
 
     def save_to_stream(self):
-        buffer = io.BytesIO()
-        self.doc.save(buffer)
-        buffer.seek(0)
-        return buffer
+        buf = io.BytesIO()
+        self.doc.save(buf)
+        buf.seek(0)
+        return buf
 
 # ---------------- Flask route ----------------
 @app.route('/generate', methods=['POST'])
@@ -266,11 +266,9 @@ def generate_word():
         data = request.get_json(force=True, silent=True)
         if not data or 'text' not in data:
             return jsonify({'error': 'متن الزامی است'}), 400
-
         gen = SmartDocumentGenerator()
         gen.process_text(data.get('text', ''))
         stream = gen.save_to_stream()
-
         return send_file(
             stream,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -280,11 +278,9 @@ def generate_word():
     except Exception as e:
         return jsonify({'error': f'Safe Fail ⛔ {str(e)}'}), 200
 
-
 @app.route('/')
 def home():
     return jsonify({'message': 'Persian DOCX Generator — Safe Mode ✅'})
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8001)
