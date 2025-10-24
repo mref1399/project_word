@@ -43,8 +43,7 @@ class SmartDocumentGenerator:
 
     def _parse_bold(self, text):
         pattern = r'\*\*(.*?)\*\*'
-        parts = []
-        last_end = 0
+        parts, last_end = [], 0
         for m in re.finditer(pattern, text):
             if m.start() > last_end:
                 parts.append({'text': text[last_end:m.start()], 'bold': False})
@@ -106,7 +105,7 @@ class SmartDocumentGenerator:
                     if part['bold']:
                         run.bold = True
 
-                if i == 0:  # رنگ پس‌زمینه‌ی سطر اول
+                if i == 0:  # رنگ پس زمینه‌ی سطر اول
                     shd = OxmlElement('w:shd')
                     shd.set(qn('w:fill'), 'D9E2F3')
                     cell._tc.get_or_add_tcPr().append(shd)
@@ -131,59 +130,65 @@ class SmartDocumentGenerator:
                 self.add_text(ln)
                 i += 1
 
-    # ⚙️ منطق XML اصلاح‌شده طبق نسخه‌ی بی‌نقص قبلی
-    def _post_fix_xml(self, stream):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            zip_ref = ZipFile(stream, 'r')
-            zip_ref.extractall(tmpdir)
-            zip_ref.close()
+    # ⚙️ بازنویسی نهایی مشابه کد اول
+    def _post_fix_xml(self, input_path, output_path):
+        temp_dir = tempfile.mkdtemp()
+        with ZipFile(input_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
 
-            doc_xml = os.path.join(tmpdir, 'word/document.xml')
-            parser = etree.XMLParser(remove_blank_text=True)
-            tree = etree.parse(doc_xml, parser)
-            root = tree.getroot()
-            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+        doc_xml = os.path.join(temp_dir, 'word/document.xml')
+        parser = etree.XMLParser(remove_blank_text=True)
+        tree = etree.parse(doc_xml, parser)
+        root = tree.getroot()
+        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
 
-            # پاک‌سازی دقیق تگ‌های جهت‌دهی اشتباه
-            for tbl in root.findall('.//w:tbl', ns):
-                tblPr = tbl.find('w:tblPr', ns)
-                if tblPr is None:
-                    tblPr = etree.SubElement(tbl, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblPr')
-                for bad_tag in ['w:bidiVisual', 'w:tblDir']:
-                    for el in tblPr.findall(bad_tag, ns):
-                        tblPr.remove(el)
+        # حذف جهت‌دهی اشتباه جداول
+        for tbl in root.findall('.//w:tbl', ns):
+            tblPr = tbl.find('w:tblPr', ns)
+            if tblPr is None:
+                tblPr = etree.SubElement(tbl, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblPr')
+            for bad_tag in ['w:bidiVisual', 'w:tblDir']:
+                for el in tblPr.findall(bad_tag, ns):
+                    tblPr.remove(el)
 
-            # حفظ RTL کلی سند
-            sectPr = root.find('.//w:sectPr', ns)
-            if sectPr is not None:
-                rtlGutter = sectPr.find('w:rtlGutter', ns)
-                if rtlGutter is None:
-                    rtlGutter = etree.SubElement(sectPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rtlGutter')
-                rtlGutter.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', 'true')
+        # حفظ RTL کلی صفحه
+        sectPr = root.find('.//w:sectPr', ns)
+        if sectPr is not None:
+            rtlGutter = sectPr.find('w:rtlGutter', ns)
+            if rtlGutter is None:
+                rtlGutter = etree.SubElement(sectPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rtlGutter')
+            rtlGutter.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', 'true')
 
-            tree.write(doc_xml, pretty_print=True, encoding='utf-8', xml_declaration=True)
+        tree.write(doc_xml, pretty_print=True, encoding='utf-8', xml_declaration=True)
 
-            fixed_path = os.path.join(tmpdir, 'data_fixed.docx')
-            with ZipFile(fixed_path, 'w') as zip_out:
-                for foldername, subfolders, filenames in os.walk(tmpdir):
-                    for filename in filenames:
-                        file_path = os.path.join(foldername, filename)
-                        arcname = os.path.relpath(file_path, tmpdir)
-                        zip_out.write(file_path, arcname)
+        with ZipFile(output_path, 'w') as zip_out:
+            for foldername, subfolders, filenames in os.walk(temp_dir):
+                for filename in filenames:
+                    file_path = os.path.join(foldername, filename)
+                    arcname = os.path.relpath(file_path, temp_dir)
+                    zip_out.write(file_path, arcname)
 
-            with open(fixed_path, 'rb') as f:
-                return io.BytesIO(f.read())
+        shutil.rmtree(temp_dir)
+        return output_path
 
+    # ذخیره و اصلاح نهایی (روش مطمئن کد اول)
     def save_to_stream(self):
-        stream = io.BytesIO()
-        self.doc.save(stream)
+        tmp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
+        self.doc.save(tmp_input.name)
+
+        tmp_output = tempfile.NamedTemporaryFile(delete=False, suffix='_fixed.docx')
+        fixed_path = self._post_fix_xml(tmp_input.name, tmp_output.name)
+
+        with open(fixed_path, 'rb') as f:
+            stream = io.BytesIO(f.read())
+
+        tmp_input.close(); tmp_output.close()
+        os.unlink(tmp_input.name); os.unlink(tmp_output.name)
         stream.seek(0)
-        fixed_stream = self._post_fix_xml(stream)
-        fixed_stream.seek(0)
-        return fixed_stream
+        return stream
 
 
-# 🧠 مسیر Flask
+# 🧠 مسیر Flask برای تولید فایل
 @app.route('/generate', methods=['POST'])
 def generate_doc():
     data = request.get_json(force=True)
@@ -201,7 +206,7 @@ def generate_doc():
 
 @app.route('/')
 def index():
-    return jsonify({'msg': 'نسخه تلفیقی Persian DOCX Generator — جهت فارسی کامل و جدول بی‌خطا ✅'})
+    return jsonify({'msg': 'Persian DOCX Generator — نسخه نهایی با سازگاری کامل Word ✅'})
 
 
 if __name__ == '__main__':
