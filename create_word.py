@@ -24,8 +24,9 @@ class PersianTextProcessor:
         text = re.sub(r'([(«])\s+', r'\1', text)
         return text.strip()
 
+
 # ========================================
-# 🧩 سازنده هوشمند سند فارسی (اصلی)
+# 🧩 سازنده هوشمند سند فارسی
 # ========================================
 class SmartDocumentGenerator:
     def __init__(self):
@@ -38,7 +39,7 @@ class SmartDocumentGenerator:
         section.page_width, section.page_height = Inches(8.27), Inches(11.69)
         section.left_margin = section.right_margin = section.top_margin = section.bottom_margin = Inches(1)
 
-    # تنظیم پاراگراف راست‌به‌چپ
+    # 📌 تنظیم پاراگراف راست‌به‌چپ
     def _set_rtl_para(self, p):
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         pPr = p._element.get_or_add_pPr()
@@ -59,7 +60,7 @@ class SmartDocumentGenerator:
             parts.append({'text': text[last_end:], 'bold': False})
         return parts if parts else [{'text': text, 'bold': False}]
 
-    # اضافه کردن پاراگراف فارسی
+    # ✍️ اضافه کردن پاراگراف
     def add_text(self, text):
         text = self.text_processor.clean_text(text)
         if not text.strip():
@@ -78,7 +79,7 @@ class SmartDocumentGenerator:
             if part['bold']:
                 run.bold = True
 
-    # اضافه کردن جدول
+    # ✏️ اضافه کردن جدول
     def add_table(self, lines):
         rows = []
         for ln in lines:
@@ -101,8 +102,6 @@ class SmartDocumentGenerator:
                 cell = tr[j]
                 p = cell.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
-                # پاک‌سازی Runs پیش‌فرض
                 for r in p.runs:
                     p._element.remove(r._element)
 
@@ -115,15 +114,14 @@ class SmartDocumentGenerator:
                     if part['bold']:
                         run.bold = True
 
-                # رنگ ردیف اول جدول
-                if i == 0:
+                if i == 0:  # رنگ ردیف اول
                     shd = OxmlElement('w:shd')
                     shd.set(qn('w:fill'), 'D9E2F3')
                     cell._tc.get_or_add_tcPr().append(shd)
 
         self.doc.add_paragraph()
 
-    # تحلیل و تصمیم خودکار روی متن ورودی
+    # تحلیل خودکار روی متن ورودی
     def process_text(self, text):
         lines = text.split('\n')
         i = 0
@@ -142,43 +140,66 @@ class SmartDocumentGenerator:
                 self.add_text(ln)
                 i += 1
 
-    # ⚙️ ویرایش XML مستقیم پس از ساخت DOCX
+    # 🧩 رفع کامل مشکلات راست‌به‌چپ در XML
     def _post_fix_xml(self, input_path, output_path):
         temp_dir = tempfile.mkdtemp()
         with ZipFile(input_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
 
+        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
         doc_xml = os.path.join(temp_dir, 'word/document.xml')
         parser = etree.XMLParser(remove_blank_text=False, resolve_entities=False)
         tree = etree.parse(doc_xml, parser)
         root = tree.getroot()
 
-        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+        # حذف تگ‌های جهت‌دهی اشتباه
+        for bad_tag in ['w:bidiVisual', 'w:tblDir']:
+            for el in root.findall(f".//{bad_tag}", ns):
+                parent = el.getparent()
+                if parent is not None:
+                    parent.remove(el)
 
-        # حذف تگ‌های جهت‌دهی اشتباه در جداول
+        # اضافه‌کردن جهت RTL برای تمام پاراگراف‌ها
+        for para in root.findall('.//w:p', ns):
+            pPr = para.find('w:pPr', ns)
+            if pPr is None:
+                pPr = etree.SubElement(para, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr')
+            bidi = pPr.find('w:bidi', ns)
+            if bidi is None:
+                bidi = etree.SubElement(pPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bidi')
+                bidi.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '1')
+
+        # جهت‌دهی جدول‌ها
         for tbl in root.findall('.//w:tbl', ns):
             tblPr = tbl.find('w:tblPr', ns)
             if tblPr is None:
                 tblPr = etree.SubElement(tbl, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblPr')
-            for bad_tag in ['w:bidiVisual', 'w:tblDir']:
-                for el in tblPr.findall(bad_tag, ns):
-                    tblPr.remove(el)
+            rtl = etree.SubElement(tblPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bidi')
+            rtl.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '1')
 
-        # اطمینان از RTL بودن کل صفحه
+        # راست‌چین کردن کل سند
         sectPr = root.find('.//w:sectPr', ns)
         if sectPr is not None:
             rtlGutter = sectPr.find('w:rtlGutter', ns)
             if rtlGutter is None:
-                rtlGutter = etree.SubElement(
-                    sectPr,
-                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rtlGutter'
-                )
+                rtlGutter = etree.SubElement(sectPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rtlGutter')
             rtlGutter.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', 'true')
 
-        # بازنویسی XML (با حفظ Encoding اصلی)
         tree.write(doc_xml, encoding='utf-8', xml_declaration=True, standalone=True)
 
-        # ساخت DOCX جدید
+        # 🎨 تنظیم فونت پیش‌فرض در styles.xml
+        styles_xml = os.path.join(temp_dir, 'word/styles.xml')
+        if os.path.exists(styles_xml):
+            stree = etree.parse(styles_xml, parser)
+            sroot = stree.getroot()
+            fonts = sroot.findall('.//w:rFonts', ns)
+            for f in fonts:
+                f.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}ascii', 'B Nazanin')
+                f.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}hAnsi', 'B Nazanin')
+                f.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}cs', 'B Nazanin')
+            stree.write(styles_xml, encoding='utf-8', xml_declaration=True, standalone=True)
+
+        # ذخیره DOCX جدید
         with ZipFile(output_path, 'w', compression=ZipFile.ZIP_DEFLATED) as zip_out:
             for foldername, _, filenames in os.walk(temp_dir):
                 for filename in filenames:
@@ -189,7 +210,7 @@ class SmartDocumentGenerator:
         shutil.rmtree(temp_dir)
         return output_path
 
-    # ذخیره و خروجی نهایی برای ارسال در HTTP
+    # خروجی نهایی برای پاسخ HTTP
     def save_to_stream(self):
         tmp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
         self.doc.save(tmp_input.name)
@@ -200,7 +221,6 @@ class SmartDocumentGenerator:
         with open(fixed, 'rb') as f:
             data = f.read()
 
-        # پاک‌سازی فایل‌های موقت
         for path in [tmp_input.name, tmp_output.name, fixed]:
             if os.path.exists(path):
                 os.remove(path)
@@ -211,7 +231,7 @@ class SmartDocumentGenerator:
 
 
 # ========================================
-# 🌐 مسیر Flask‌ها
+# 🌐 مسیرهای Flask
 # ========================================
 @app.route('/generate', methods=['POST'])
 def generate_doc():
@@ -228,14 +248,14 @@ def generate_doc():
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     )
 
+
 @app.route('/')
 def index():
-    return jsonify({
-        'msg': '📄 Persian DOCX Generator — نسخه نهایی. کاملاً سازگار با Word ✅'
-    })
+    return jsonify({'msg': '📄 Persian DOCX Generator — نسخه نهایی، کاملاً سازگار با Word ✅'})
+
 
 # ========================================
-# 🚀 اجرای سرور
+# 🚀 اجرای سرور Flask
 # ========================================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8001)
