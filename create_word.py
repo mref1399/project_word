@@ -15,7 +15,7 @@ class PersianTextProcessor:
             return ''
         text = text.replace('ي', 'ی').replace('ك', 'ک').replace('ە', 'ه').replace('ؤ', 'و')
         text = re.sub(r'\s+', ' ', text)
-        text = re.sub(r'\s+([.,،؛:!؟»\\\)])', r'\1', text)
+        text = re.sub(r'\s+([.,،؛:!؟»\\)])', r'\1', text)
         text = re.sub(r'([(«])\s+', r'\1', text)
         return text.strip()
 
