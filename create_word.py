@@ -48,6 +48,7 @@ class SmartDocumentGenerator:
         
         # تنظیم bidi برای جدول
         bidiVisual = OxmlElement('w:bidiVisual')
+        bidiVisual.set(qn('w:val'), 'true')
         tblPr.append(bidiVisual)
 
     def _reverse_table_columns(self, table):
