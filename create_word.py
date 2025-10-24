@@ -47,9 +47,9 @@ class SmartDocumentGenerator:
         for border_name in ['top', 'left', 'bottom', 'right']:
             border = OxmlElement(f'w:{border_name}')
             border.set(qn('w:val'), 'single')
-            border.set(qn('w:sz'), '12')  # ضخامت حاشیه
+            border.set(qn('w:sz'), '12')
             border.set(qn('w:space'), '0')
-            border.set(qn('w:color'), '000000')  # رنگ مشکی
+            border.set(qn('w:color'), '000000')
             tcBorders.append(border)
         
         tcPr.append(tcBorders)
@@ -59,7 +59,7 @@ class SmartDocumentGenerator:
         tc = cell._element
         tcPr = tc.get_or_add_tcPr()
         shading = OxmlElement('w:shd')
-        shading.set(qn('w:fill'), 'D9E2F3' if is_header else 'FFFFFF')  # آبی روشن برای هدر
+        shading.set(qn('w:fill'), 'D9E2F3' if is_header else 'FFFFFF')
         tcPr.append(shading)
 
     def _set_cell_margins(self, cell):
@@ -76,25 +76,91 @@ class SmartDocumentGenerator:
         
         tcPr.append(tcMar)
 
-    def _parse_bold_text(self, text):
-        """تجزیه متن و شناسایی بخش‌های bold شده با **"""
+    def _clean_markup(self, text):
+        """حذف تمام نشانه‌گذاری‌های فرمت (**, __, ~~)"""
+        # حذف ** برای bold
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        # حذف __ برای italic/underline
+        text = re.sub(r'__(.*?)__', r'\1', text)
+        # حذف ~~ برای strikethrough
+        text = re.sub(r'~~(.*?)~~', r'\1', text)
+        return text
+
+    def _parse_formatted_text(self, text):
+        """تجزیه متن و شناسایی فرمت‌های مختلف (**, __, ~~)"""
         parts = []
-        pattern = r'\*\*(.*?)\*\*'
-        last_end = 0
+        # الگوی ترکیبی برای ** و __ و ~~
+        pattern = r'(\*\*.*?\*\*|__.*?__|~~.*?~~)'
+        segments = re.split(pattern, text)
         
+        for segment in segments:
+            if not segment:
+                continue
+            
+            if segment.startswith('**') and segment.endswith('**'):
+                # متن bold
+                parts.append({'text': segment[2:-2], 'bold': True, 'italic': False, 'strike': False})
+            elif segment.startswith('__') and segment.endswith('__'):
+                # متن italic/underline
+                parts.append({'text': segment[2:-2], 'bold': False, 'italic': True, 'strike': False})
+            elif segment.startswith('~~') and segment.endswith('~~'):
+                # متن strikethrough
+                parts.append({'text': segment[2:-2], 'bold': False, 'italic': False, 'strike': True})
+            else:
+                # متن عادی
+                parts.append({'text': segment, 'bold': False, 'italic': False, 'strike': False})
+        
+        return parts if parts else [{'text': text, 'bold': False, 'italic': False, 'strike': False}]
+
+    def _parse_chemical_formula(self, text):
+        """تجزیه فرمول شیمیایی و شناسایی زیرنویس و بالانویس"""
+        parts = []
+        # الگوی ترکیبی: H_2O یا H_{10}O یا X^2 یا X^{10}
+        pattern = r'([A-Za-z]+)(_\{?\d+\}?|\^\{?\d+\}?)?'
+        
+        pos = 0
         for match in re.finditer(pattern, text):
-            # متن قبل از **
-            if match.start() > last_end:
-                parts.append({'text': text[last_end:match.start()], 'bold': False})
-            # متن داخل **
-            parts.append({'text': match.group(1), 'bold': True})
-            last_end = match.end()
+            # متن قبل از فرمول
+            if match.start() > pos:
+                parts.append({
+                    'text': text[pos:match.start()],
+                    'subscript': False,
+                    'superscript': False
+                })
+            
+            element = match.group(1)  # عنصر شیمیایی (مثلاً H)
+            modifier = match.group(2)  # زیرنویس یا بالانویس (_2 یا ^2)
+            
+            # اضافه کردن عنصر
+            parts.append({
+                'text': element,
+                'subscript': False,
+                'superscript': False
+            })
+            
+            # اضافه کردن زیرنویس یا بالانویس
+            if modifier:
+                number = re.sub(r'[_^\{\}]', '', modifier)  # حذف _, ^, {, }
+                is_subscript = modifier.startswith('_')
+                is_superscript = modifier.startswith('^')
+                
+                parts.append({
+                    'text': number,
+                    'subscript': is_subscript,
+                    'superscript': is_superscript
+                })
+            
+            pos = match.end()
         
-        # متن بعد از آخرین **
-        if last_end < len(text):
-            parts.append({'text': text[last_end:], 'bold': False})
+        # متن باقیمانده
+        if pos < len(text):
+            parts.append({
+                'text': text[pos:],
+                'subscript': False,
+                'superscript': False
+            })
         
-        return parts if parts else [{'text': text, 'bold': False}]
+        return parts if parts else [{'text': text, 'subscript': False, 'superscript': False}]
 
     # ---------------- تشخیص نوع ----------------
     def detect_content_type(self, line):
@@ -105,8 +171,12 @@ class SmartDocumentGenerator:
             return 'table'
         if re.match(r'^#+', line):
             return 'heading'
+        # تشخیص فرمول ریاضی با $ و $$
         if re.search(r'\$\$.*?\$\$|\$.*?\$', line):
             return 'formula'
+        # تشخیص فرمول شیمیایی (H_2O, CO_2, etc.)
+        if re.search(r'[A-Za-z]+_\{?\d+\}?|\^\{?\d+\}?', line):
+            return 'chemical'
         if re.match(r'^(شکل|جدول)\s*\d+', line):
             return 'caption'
         return 'text'
@@ -114,8 +184,8 @@ class SmartDocumentGenerator:
     # ---------------- تیتر ----------------
     def add_heading(self, text, level=1):
         text = re.sub(r'^#+\s*', '', text)
-        # حذف ** از عناوین
-        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        # حذف تمام نشانه‌گذاری‌ها از عناوین
+        text = self._clean_markup(text)
         text = self.text_processor.clean_text(text)
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -126,21 +196,60 @@ class SmartDocumentGenerator:
         run.font.size = Pt(18 - level * 2)
         run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-    # ---------------- فرمول ----------------
+    # ---------------- فرمول ریاضی ----------------
     def add_formula(self, text):
-        formulas = re.findall(r'\$\$.*?\$\$|\$.*?\$', text)
-        for f in formulas:
-            f = f.strip('$').strip()
-            p = self.doc.add_paragraph(f)
-            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            r = p.runs[0]
-            r.font.name = 'Cambria Math'
-            r.font.size = Pt(14)
+        """نمایش فرمول‌های ریاضی با $ و $$"""
+        # جدا کردن فرمول‌ها از متن عادی
+        parts = re.split(r'(\$\$.*?\$\$|\$.*?\$)', text)
+        
+        p = self.doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        
+        for part in parts:
+            if not part:
+                continue
+            
+            if part.startswith('$$') and part.endswith('$$'):
+                # فرمول display mode
+                formula_text = part.strip('$').strip()
+                run = p.add_run(formula_text)
+                run.font.name = 'Cambria Math'
+                run.font.size = Pt(14)
+            elif part.startswith('$') and part.endswith('$'):
+                # فرمول inline
+                formula_text = part.strip('$').strip()
+                run = p.add_run(formula_text)
+                run.font.name = 'Cambria Math'
+                run.font.size = Pt(12)
+            else:
+                # متن عادی
+                run = p.add_run(part)
+                run.font.name = 'B Nazanin'
+                run.font.size = Pt(14)
+                run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+
+    # ---------------- فرمول شیمیایی ----------------
+    def add_chemical_formula(self, text):
+        """نمایش فرمول‌های شیمیایی با زیرنویس و بالانویس صحیح"""
+        p = self.doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        
+        parts = self._parse_chemical_formula(text)
+        
+        for part in parts:
+            run = p.add_run(part['text'])
+            run.font.name = 'Cambria'
+            run.font.size = Pt(14)
+            
+            if part['subscript']:
+                run.font.subscript = True
+            elif part['superscript']:
+                run.font.superscript = True
 
     # ---------------- کپشن ----------------
     def add_caption(self, text):
-        # حذف ** از کپشن
-        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        # حذف تمام نشانه‌گذاری‌ها از کپشن
+        text = self._clean_markup(text)
         p = self.doc.add_paragraph(self.text_processor.clean_text(text))
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         self._set_rtl(p)
@@ -150,24 +259,24 @@ class SmartDocumentGenerator:
             run.font.size = Pt(13)
             run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
 
-    # ---------------- جدول شکیل با فرمت‌بندی حرفه‌ای ----------------
+    # ---------------- جدول با حذف نشانه‌گذاری ----------------
     def add_table(self, lines):
         rows = []
         for ln in lines:
             if not ln.strip():
                 continue
-            parts = [self.text_processor.clean_text(p.strip()) for p in ln.strip('|').split('|')]
+            # حذف ** و __ از محتوای سلول‌ها
+            parts = [self._clean_markup(self.text_processor.clean_text(p.strip())) for p in ln.strip('|').split('|')]
             if len(parts) > 1:
                 rows.append(parts)
 
         if not rows:
             return
 
-        # اطمینان از یکنواختی تعداد ستون‌ها
         cols = max(len(r) for r in rows)
         rows = [r + [''] * (cols - len(r)) for r in rows]
 
-        # حذف خط جداکننده markdown (خط دوم با ---|---|---)
+        # حذف خط جداکننده markdown
         if len(rows) > 1 and all(set(cell.strip()) <= {'-', ':', '|', ' '} for cell in rows[1]):
             rows.pop(1)
 
@@ -177,68 +286,52 @@ class SmartDocumentGenerator:
         try:
             table = self.doc.add_table(rows=len(rows), cols=cols)
             table.style = 'Table Grid'
-            
-            # تنظیم عرض جدول
             table.autofit = False
             table.allow_autofit = False
             
             for i, row_data in enumerate(rows):
-                is_header = (i == 0)  # سطر اول را هدر در نظر می‌گیریم
+                is_header = (i == 0)
                 
                 for j, cell_data in enumerate(row_data):
                     try:
                         cell = table.rows[i].cells[j]
                         
-                        # تنظیمات ظاهری سلول
                         self._set_cell_borders(cell)
                         self._set_cell_shading(cell, is_header)
                         self._set_cell_margins(cell)
                         
-                        # محتوای سلول با پشتیبانی از **bold**
                         p = cell.paragraphs[0]
                         p.paragraph_format.space_before = Pt(3)
                         p.paragraph_format.space_after = Pt(3)
                         
-                        # پردازش متن برای bold
-                        parts = self._parse_bold_text(cell_data)
+                        # اضافه کردن متن ساده (بدون فرمت)
+                        run = p.add_run(cell_data)
                         
-                        for part in parts:
-                            run = p.add_run(part['text'])
-                           
-                            if re.search(r'[A-Za-z0-9]', part['text']):
-                                run.font.name = 'Times New Roman'
-                                run.font.size = Pt(12)
-                                run._element.rPr.rFonts.set(qn('w:ascii'), 'Times New Roman')
-                                run._element.rPr.rFonts.set(qn('w:hAnsi'), 'Times New Roman')
-                            else:
-                                run.font.name = 'B Nazanin'
-                                run.font.size = Pt(12)
-                                run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
-                            
-                            # اعمال bold
-                            if part['bold'] or is_header:
-                                run.bold = True
-                            
-                            # هدر را برجسته می‌کنیم
-                            if is_header:
-                                run.font.color.rgb = RGBColor(0, 0, 0)
+                        if re.search(r'[A-Za-z0-9]', cell_data):
+                            run.font.name = 'Times New Roman'
+                            run.font.size = Pt(11)
+                        else:
+                            run.font.name = 'B Nazanin'
+                            run.font.size = Pt(12)
+                            run._element.rPr.rFonts.set(qn('w:cs'), 'B Nazanin')
+                        
+                        if is_header:
+                            run.bold = True
+                            run.font.color.rgb = RGBColor(0, 0, 0)
                         
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                         self._set_rtl(p)
                         
-                    except Exception as e:
+                    except Exception:
                         continue
             
-            # اضافه کردن فاصله بعد از جدول
             self.doc.add_paragraph()
             
         except Exception:
-            # اگر جدول واقعاً خراب است، کل داده را به متن عادی تبدیل می‌کند
             joined = "\n".join([" | ".join(r) for r in rows])
             self.add_text(joined)
-            return
 
-    # ---------------- متن با پشتیبانی از bold ----------------
+    # ---------------- متن با پشتیبانی از فرمت‌ها ----------------
     def add_text(self, text):
         text = self.text_processor.clean_text(text)
         if not text:
@@ -249,8 +342,8 @@ class SmartDocumentGenerator:
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
         self._set_rtl(p)
         
-        # پردازش متن برای bold
-        parts = self._parse_bold_text(text)
+        # پردازش متن برای فرمت‌ها
+        parts = self._parse_formatted_text(text)
         
         for part in parts:
             run = p.add_run(part['text'])
@@ -260,6 +353,10 @@ class SmartDocumentGenerator:
             
             if part['bold']:
                 run.bold = True
+            if part['italic']:
+                run.italic = True
+            if part['strike']:
+                run.font.strike = True
 
     # ---------------- پردازش کل ----------------
     def process_text(self, text):
@@ -288,6 +385,8 @@ class SmartDocumentGenerator:
                 self.add_heading(ln, level=min(level, 3))
             elif t == 'formula':
                 self.add_formula(ln)
+            elif t == 'chemical':
+                self.add_chemical_formula(ln)
             elif t == 'caption':
                 self.add_caption(ln)
             else:
@@ -318,7 +417,6 @@ def generate_word():
             download_name='document.docx'
         )
     except Exception as e:
-        # هرگونه استثناء را مهار می‌کند تا n8n هرگز 500 نگیرد
         return jsonify({'error': f'Safe Fail ⛔ {str(e)}'}), 200
 
 @app.route('/')
